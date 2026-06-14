@@ -4,6 +4,16 @@
 
 sleep 30
 
+# --- AVA IoT connection ---
+# firmware 1413 doesn't auto-connect AVA to miio_agent unless
+# /data/config/ava/iot.flag contains "miiot". Valetudo intercepts the
+# cloud provisioning flow, so this flag is never written by normal setup.
+# Without it, all Valetudo MIIO property/action commands time out.
+echo -n "miiot" > /data/config/ava/iot.flag
+sleep 1
+avacmd iot '{"type":"iot", "notify":"open_server"}' 2>/dev/null || true
+logger -t postboot "AVA IoT server connection triggered"
+
 # --- WiFi ---
 logger -t postboot "checking WiFi status"
 STATUS=$(wpa_cli -iwlan0 status 2>/dev/null | grep "^wpa_state" | cut -d= -f2)
@@ -37,4 +47,8 @@ logger -t postboot "chroot mounts done"
 # --- Valetudo ---
 sleep 5
 logger -t postboot "starting Valetudo"
-VALETUDO_CONFIG_PATH=/data/valetudo_config/valetudo.json /data/valetudo > /tmp/valetudo.log 2>&1 &
+(while true; do
+    VALETUDO_CONFIG_PATH=/data/valetudo_config/valetudo.json /data/valetudo >> /tmp/valetudo.log 2>&1
+    logger -t postboot "Valetudo exited, restarting in 5s..."
+    sleep 5
+done) &

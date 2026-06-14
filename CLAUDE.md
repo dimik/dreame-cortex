@@ -123,6 +123,7 @@ Ubuntu chroot (idle, available)             inference_node (YOLOv8, NPU)
 5. **AVA owns `/dev/ttyS4`** — LiDAR cannot be read directly without conflicting with AVA. Use Valetudo MQTT for map/scan data instead.
 6. **squashfs root** — any change to system files requires either a bind mount from `/data/` or a chroot. Never attempt `mount -o remount,rw /`.
 7. **exec_monitor.sh** watches only the `ava` process — it does NOT restart hostapd if killed. Safe to kill hostapd permanently.
+8. **firmware 1413 IoT flag** — AVA does NOT connect to `miio_agent` (TCP 54320) at boot unless `/data/config/ava/iot.flag` contains `miiot`. This flag is normally written during cloud provisioning (which we bypass via Valetudo). Without it, ALL Valetudo MIIO property/action commands time out. Fix: `_root_postboot.sh` writes `miiot` to the flag and calls `avacmd iot '{"type":"iot","notify":"open_server"}'` at boot.
 
 ---
 
