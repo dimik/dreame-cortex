@@ -1,0 +1,17 @@
+{
+  "embedded": true,
+  "robot": {
+    "implementation": "DreameGen2LidarRobot",
+    "implementationSpecificConfig": {}
+  },
+  "webserver": {
+    "port": 80
+  },
+  "mqtt": {
+    "enabled": false
+  },
+  "ntpClientConfig": {
+    "enabled": true,
+    "server": "pool.ntp.org"
+  }
+}

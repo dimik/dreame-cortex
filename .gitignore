@@ -1,0 +1,12 @@
+# credentials — never commit real WiFi keys
+robot/boot/_root.sh.local
+*.psk
+*.key
+
+# build artifacts
+build/
+install/
+log/
+__pycache__/
+*.pyc
+.colcon_install_layout
