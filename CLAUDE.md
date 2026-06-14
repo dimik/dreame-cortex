@@ -75,7 +75,7 @@ This must run **before** `wpa_supplicant.sh`. See `docs/wifi-hack.md` for full e
 - Binary: `/data/valetudo` (37MB, aarch64)
 - Config: `/data/valetudo_config/valetudo.json`
 - Web UI: `http://192.168.1.213`
-- Robot implementation: `DreameGen2LidarRobot` (auto-detected)
+- Robot implementation: `DreameD10SProValetudoRobot` (auto-detected)
 - MQTT: disabled by default — enable in valetudo.json for Dragon Q6A bridge
 
 ---

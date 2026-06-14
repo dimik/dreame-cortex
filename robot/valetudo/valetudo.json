@@ -1,17 +1,90 @@
 {
   "embedded": true,
   "robot": {
-    "implementation": "DreameGen2LidarRobot",
+    "implementation": "auto",
     "implementationSpecificConfig": {}
   },
   "webserver": {
-    "port": 80
+    "port": 80,
+    "basicAuth": {
+      "enabled": false,
+      "username": "valetudo",
+      "password": "valetudo"
+    },
+    "blockExternalAccess": false
   },
   "mqtt": {
-    "enabled": false
+    "enabled": false,
+    "connection": {
+      "host": "foobar.example",
+      "port": 1883,
+      "tls": {
+        "enabled": false,
+        "ca": "",
+        "ignoreCertificateErrors": false
+      },
+      "authentication": {
+        "credentials": {
+          "enabled": false,
+          "username": "",
+          "password": ""
+        },
+        "clientCertificate": {
+          "enabled": false,
+          "certificate": "",
+          "key": ""
+        }
+      }
+    },
+    "identity": {
+      "identifier": ""
+    },
+    "interfaces": {
+      "homie": {
+        "enabled": true,
+        "cleanAttributesOnShutdown": false
+      },
+      "homeassistant": {
+        "enabled": true,
+        "cleanAutoconfOnShutdown": false
+      }
+    },
+    "customizations": {
+      "topicPrefix": "",
+      "provideMapData": true
+    },
+    "optionalExposedCapabilities": []
   },
-  "ntpClientConfig": {
+  "ntpClient": {
     "enabled": true,
-    "server": "pool.ntp.org"
-  }
+    "server": "valetudo.pool.ntp.org",
+    "port": 123,
+    "interval": 28800000,
+    "timeout": 10000
+  },
+  "timers": {},
+  "logLevel": "info",
+  "debug": {
+    "debugHassAnchors": false,
+    "storeRawFDSUploads": false
+  },
+  "networkAdvertisement": {
+    "enabled": true
+  },
+  "updater": {
+    "enabled": true,
+    "updateProvider": {
+      "type": "github",
+      "implementationSpecificConfig": {}
+    }
+  },
+  "oobe": {
+    "welcomeDialogDismissed": true
+  },
+  "valetudo": {
+    "customizations": {
+      "friendlyName": ""
+    }
+  },
+  "_version": "2026.05.0"
 }
