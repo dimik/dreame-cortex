@@ -24,3 +24,10 @@ WPAEOF
 
 mount --bind /data/config/wifi/wpa_supplicant.conf /etc/wifi/wpa_supplicant.conf
 logger -t root_sh "wpa_supplicant.conf bind mounted"
+
+# Force mop-only mode (CleanMode:1) so AVA never spins up the vacuum fan.
+# _root.sh runs before AVA starts, so this write wins the race.
+if [ -f /data/config/ava/clean_parameter.json ]; then
+    sed -i 's/"CleanMode":[0-9]/"CleanMode":1/' /data/config/ava/clean_parameter.json
+    logger -t root_sh "clean_parameter.json patched to CleanMode:1 (mop-only)"
+fi
