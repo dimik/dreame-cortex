@@ -143,7 +143,7 @@ Ubuntu chroot (idle, available)             inference_node (YOLOv8, NPU)
 6. **squashfs root** — any change to system files requires either a bind mount from `/data/` or a chroot. Never attempt `mount -o remount,rw /`. `/etc/miio` is a SYMLINK to `/data/config/miio/` (so it's already writable via /data/).
 7. **exec_monitor.sh** watches only the `ava` process — it does NOT restart hostapd if killed. Safe to kill hostapd permanently.
 8. **firmware 1413 IoT flag** — AVA does NOT connect to `miio_agent` (TCP 54320) at boot unless `/data/config/ava/iot.flag` contains `miiot`. This flag is normally written during cloud provisioning (which we bypass via Valetudo). Without it, ALL Valetudo MIIO property/action commands time out. Fix: `_root_postboot.sh` writes `miiot` to the flag and calls `avacmd iot '{"type":"iot","notify":"open_server"}'` at boot.
-9. **work_mode 17 persists at boot** — AVA enters work_mode 17 (RemoteCtrlMode) on every boot via the MIIO provisioning flow. Most Valetudo capabilities return HTTP 400 in this state. See `### work_mode 17 — root cause and investigation` below.
+9. **work_mode 17 persists at boot** — AVA enters work_mode 17 (RemoteCtrlMode) on every boot via the MIIO provisioning flow. (Note: the HTTP 400s we hit on manual control were a wrong REST payload — `{"operation":...}` instead of `{"action":...}` — not work_mode.) See `### work_mode 17 — root cause and investigation` below.
 10. **_root.sh has hardcoded WiFi credentials** — the `4K` SSID PSK is hardcoded. Deploying from repo (which may have placeholder `YOUR_SSID`/`YOUR_HEX_PSK`) will break WiFi. Always verify credentials before deploy.
 11. **Bind-mount a FILE over a non-existent squashfs path = boot failure** — if you try `mount --bind /data/file /etc/miio/nonexistent` where `nonexistent` doesn't exist in squashfs, the bind-mount silently fails but breaks init. Always bind-mount directories, or ensure the target file exists in squashfs first.
 
@@ -154,7 +154,7 @@ Ubuntu chroot (idle, available)             inference_node (YOLOv8, NPU)
 ### AVA daemon internals
 
 AVA (`/ava/bin/ava`) is a closed-source C++ binary running as PID 1-level process on the robot. It owns all hardware:
-- Motors (wheels, side brush, main brush, fan/vacuum, mop pump) via `/dev/ttyS3` (MCU serial, 230400 baud, binary `55 AA`-prefixed protocol, fd 26 of ava process)
+- Motors (wheels, side brush, main brush, fan/vacuum, mop pump) via the MCU on `/dev/ttyS4` (`3c…3e`-framed protocol with Modbus CRC16 — see the MCU serial section)
 - LiDAR via `/dev/ttyS4` (fd 24 of ava process)
 - SLAM, path planning, behavior tree
 
@@ -163,8 +163,8 @@ AVA is structured as a behavior tree with named nodes. Nodes communicate via pub
 **Key AVA file descriptors:**
 | fd | Device | Purpose |
 |----|--------|---------|
-| 24 | `/dev/ttyS4` | LiDAR serial |
-| 26 | `/dev/ttyS3` | MCU (motors, sensors) serial |
+| 24 | `/dev/ttyS4` | MCU serial — motors, fan, brushes, IMU/sensors (`3c…3e` protocol) |
+| 26 | `/dev/ttyS3` | held open but read-mostly (LiDAR); no writes observed |
 
 **Key AVA config files (on `/data/`, writable):**
 | File | Purpose |
@@ -220,7 +220,7 @@ Valetudo (UDP 8053) ↔ miio_client (UDP 54321, TCP 54322/54323) ↔ miio_agent 
 
 ### work_mode 17 — root cause and investigation
 
-**Symptom**: On every boot, AVA immediately enters work_mode 17 (RemoteCtrlMode). Most Valetudo REST capabilities return HTTP 400 in this state. `{"operation":"disable"}` on HighResolutionManualControlCapability also returns 400.
+**Symptom**: On every boot, AVA immediately enters work_mode 17 (RemoteCtrlMode). Most Valetudo REST capabilities return HTTP 400 in this state. NOTE: the manual-control 400s were a wrong REST payload (`{"operation":...}` vs the correct `{"action":...}`), NOT work_mode.
 
 **MIIO provisioning flow (root cause):**
 ```
@@ -256,7 +256,7 @@ ap will close in 1799s  (←30 min countdown)
 - Created `/data/config/miio/wifi.conf` with dummy content → file exists but params:0 still sent
 - Directory bind-mount `/data/config/miio` → `/etc/miio` → no-op (symlink resolves to same path)
 - `avacmd msg_cvt '{"type":"msgCvt","cmd":"status_idle"}'` → `{"ret":"fail"}` in work_mode 17
-- `curl PUT /api/v2/robot/capabilities/HighResolutionManualControlCapability {"operation":"disable"}` → HTTP 400
+- `curl PUT …/HighResolutionManualControlCapability {"operation":"disable"}` → HTTP 400 (wrong schema; correct is `{"action":"disable"}`)
 - `avacmd clb {"cmd":"report_network_connect_mode","mode":0}` → `{}` (not recognized)
 - Valetudo `{"command":"home"}` → HTTP 400 (Bad Request) in work_mode 17
 
@@ -293,7 +293,7 @@ mount --bind /data/config/miio/wifi.conf /etc/miio/wifi.conf  # WRONG!
 
 | Field | Values | Effect |
 |-------|--------|--------|
-| `CleanMode` | 0=sweep, 1=mop-only, 2=sweep+mop | **1 permanently disables vacuum fan** |
+| `CleanMode` | 0=sweep, 1=mop-only, 2=sweep+mop | boot cleaning mode; does NOT gate the fan in manual/remote mode (the MCU SetCleaning `f3` does) |
 | `CleanMop` | 0/1 | Whether mop pad is installed |
 | `CleanCarPetPress` | 0/1 | Carpet boost |
 | `StreamerSwitch` | 0/3 | Streamline feature |
@@ -337,177 +337,34 @@ Key log files that are NOT user.log (which is from previous boots and goes silen
 1. AVA reads `clean_parameter.json` → WritePropInt loads: `type=0 value=1` (CleanMode=1 mop-only), `type=1 value=1` (CleanMop), `type=17 value=2` (CarpetPressState), `type=23 value=3` (StreamerSwitch) etc.
 2. Camera AI + LiDAR init → hundreds of `[CL2] Kernel` lines (OpenCL GPU kernels)
 3. Valetudo connects (dummycloud at t≈22s after boot) → AVA receives piid:13 enable:
-   - `WritePropInt type=0 value=0` → **CleanMode RESET to 0 (sweep)** ← fan activates here
+   - `WritePropInt type=0 value=0` → CleanMode set to 0 (sweep)
    - `WritePropString piid:13 {"spdv":0,"spdw":0,"audio":"true","random":N}` → RemoteCtrlMode entered
 4. Periodic keepalive piid:13 writes with `audio:false`
 
-**Critical: AVA resets CleanMode to 0 (sweep mode = fan ON) every time piid:13 is written** — i.e., every time Valetudo sends a remote control command. This overrides our boot-time `clean_parameter.json` CleanMode:1 patch, and also overrides `set_only_mop.py`'s `only_mop=1` (which is a separate blackboard key from CleanMode type=0).
+Note: `CleanMode` (`WritePropInt type=0`) is a property-store/behavior-tree value; it does NOT gate the vacuum fan in manual/remote mode. The fan is driven solely by the MCU `SetCleaning` (`f3`) byte — see the Vacuum fan disable section. (Earlier theories that holding CleanMode=1 or `only_mop`=1 would stop the fan were disproven.)
 
 ---
 
-### Permanent vacuum fan disable
+### Vacuum fan disable (SOLVED — MCU SetCleaning filter)
 
-**Goal**: Use `HighResolutionManualControlCapability` (manual driving) without the vacuum fan running.
+**Goal**: drive the robot in manual navigation (`HighResolutionManualControlCapability`) without the vacuum fan running.
 
-> **STATUS 2026-06-15 — property-layer approaches abandoned, moving to MCU serial filter.**
-> All three software approaches that fight AVA at the *property* layer are confirmed
-> ineffective (see "Corrected diagnosis" below). The fan is ultimately commanded by a
-> `CLEANSET` frame AVA writes to `/dev/ttyS3` (the MCU). The chosen robust fix is to
-> interpose an `LD_PRELOAD` shim on AVA that rewrites the fan-power byte of `CLEANSET`
-> frames to 0. See "Chosen approach: MCU CLEANSET fan-byte filter" below.
+**Solution (deployed & verified 2026-06-15):** an `LD_PRELOAD` shim on AVA rewrites the fan-level byte of the MCU `SetCleaning` packet to 0. This is the single chokepoint — the fan spins iff that byte is nonzero, independent of any AVA property/mode/work_mode. Verified live: with manual nav enabled and the Valetudo fan preset at **max**, the SetCleaning frame on the wire is `3c 05 01 55 58 00 00 00 bd 50 3e` (fan byte `f3=00`), while MotorCtrl (driving) keeps flowing and the brush/pump bytes (`f1`,`f2`) are untouched. AVA stays healthy.
 
-**Root cause — UPDATED after debugging:**
+**How the fan is controlled** (full protocol in the MCU serial section below):
+- Fan command = type `0x01` (`SetCleaning`) on `/dev/ttyS4`, 5-byte payload `f1..f5`. A live fan-preset sweep in manual nav showed **only `payload[2]` (f3)** tracks fan speed: low/med=`03`, max=`05`, off=`00`. `f1`/`f2` are brush/pump.
+- The shim (`fanoff_shim.c`) detects `3c`-framed packets, zeros `f3` of type-0x01 frames, recomputes the Modbus CRC16 (handling `?`-escaping), and passes everything else verbatim.
 
-When Valetudo starts and connects to dummycloud (t≈22s after boot), it sends `WritePropString piid:13 {"spdv":0,"spdw":0,"audio":"true","random":N}` — the initial RemoteCtrlMode enable. AVA processes this and:
-1. Executes `WritePropInt type=0 value=0` → resets CleanMode to 0 (sweep mode = fan enabled)
-2. Enters RemoteCtrlMode (work_mode 17)
-3. Fan activates via MCU
+**Manual-nav REST payload** is `{"action":"enable"}` / `{"action":"disable"}` (the `{"operation":...}` form returns HTTP 400 — the real cause of the earlier "rejected" results, not work_mode).
 
-This happens BEFORE our postboot fan_speed=0 set (t≈90s). Setting `FanSpeedControlCapability "low"` after this point:
-- Returns "OK" from Valetudo
-- Valetudo updates its internal cache to rawValue=0
-- But the state REVERTS to rawValue=3 (max) after some time, suggesting AVA overrides it or the command doesn't affect the running fan in RemoteCtrlMode
-- **Fan continues running** — confirmed by user
+**Deploy / persistence:**
+- `deploy_fanoff.sh` builds a patched `ava.sh` (`export LD_PRELOAD=/data/lib/libfanoff_filter.so`), bind-mounts it over `/etc/rc.d/ava.sh`, restarts AVA.
+- `_root.sh` re-establishes that bind-mount early at boot (before app start) so the filter persists across reboots.
+- Build with `build_fanoff.sh` (freestanding, glibc-2.23-safe). RE artifacts: `~/dreame-re/{mcu.bin,node_signal.so}`; protocol reference `~/dreame_mcu_protocol` (alufers).
 
-**`HighResolutionManualControlCapability enable` returns HTTP 400** — because robot is ALREADY in RemoteCtrlMode from Valetudo's automatic startup init. This is NOT a blocking error; the robot IS in remote control mode.
+**Implementation kit** (`scripts/robot/`): `fanoff_shim.c` (filter), `build_fanoff.sh`, `deploy_fanoff.sh`, `capture_cleanset.sh`.
 
-**piid:13 vs piid:15**: CLAUDE.md previously said piid:15 for remote control. Actual internal AVA log shows piid:13. These may be different numbering systems (MIIO siid/piid vs AVA internal property index).
-
-**Valetudo fan speed preset mapping** (D10s Pro — offset by 1 from MIIO):
-| Valetudo preset | MIIO siid:4 piid:4 | Fan behavior |
-|---|---|---|
-| `low` | 0 | Fan off (stored preset) |
-| `medium` | 1 | Low speed |
-| `high` | 2 | Medium speed |
-| `max` | 3 | High speed |
-
-**Method 1 — FanSpeedControlCapability at boot (PARTIALLY WORKING, unreliable)**:
-Set `FanSpeedControlCapability` preset to `"low"` (= MIIO 0 = off) after Valetudo starts. This sets the stored fan_speed preset in AVA's MIIO property store. However:
-- Fan is already running from t=22s (Valetudo's piid:13 init), set doesn't run until t≈90s
-- State may revert to rawValue=3 (max) — suggesting the command doesn't affect the currently running fan in RemoteCtrlMode
-- Still implemented in `_root_postboot.sh` (30×3s retry loop) as a safety measure
-
-**Method 2 — `set_only_mop.py` daemon (CONFIRMED INEFFECTIVE — holds the WRONG address)**:
-`set_only_mop.py` holds AVA BT blackboard `only_mop=1` AND scans the heap for the
-`CleanMode` integer array (anchor pattern `type[1]=1, type[17]=2, type[23]=3`) to hold
-`type[0]=1` at 50ms. **Live evidence (2026-06-15) proves this is a no-op:** the daemon
-heartbeat reports `CleanMode=1 only_mop=1`, yet `avacmd msg_cvt get_prop clean_mode`
-returns `0` at the same moment. If the daemon were holding the real CleanMode store,
-`get_prop` would read `1`. The integer array its heap-scan latched onto is therefore
-**not** the property AVA acts on. The daemon has been a no-op the entire time. Do not
-trust its heartbeat. (Kept running for now but slated for removal once the shim lands.)
-
-**Method 3 — `clean_parameter.json` CleanMode:1 (partial)**:
-Loads at boot, sets CleanMode=1. But AVA actively RESETS CleanMode to 0 when it processes piid:13 commands. Does NOT prevent fan in work_mode 17.
-
-**Note on CleanMode:1**: Kept in `_root.sh` as a safety net, but it does NOT control the fan in work_mode 17.
-
-**Note on manual control speed**: CleanMode:1 (mop-only) does NOT reduce manual driving speed. Manual control wheel speed is governed by `spdv`/`spdw` MIIO parameters (`remote_params` blackboard), not by mop speed limits.
-
-**Test result (under investigation):**
-Live monitoring captured the HighResolutionManualControlCapability enable sequence:
-- work_mode: 17 (provisioning) → 13 (intermediate) → 17 (RemoteCtrlMode proper)
-- log_0: `WritePropInt type=0 value=0` (CleanMode=0/sweep reset) then piid:13 `{"spdv":0,"spdw":0,"audio":"true","random":554}`
-- `fan_speed` Valetudo state: stayed "low" (rawValue=0) throughout enable sequence
-- Conclusion pending user confirmation: if fan was silent, `FanSpeedControlCapability "low"` DOES suppress the fan even with CleanMode=0 in RemoteCtrlMode. If fan still ran, the MIIO fan_speed preset doesn't affect the motor in RemoteCtrlMode.
-
-**If still failing — next approaches to investigate:**
-1. **Heap-patch CleanMode (WritePropInt type=0)**: Extend `set_only_mop.py` to also hold the integer property type=0 (CleanMode) at value=1 (mop-only) continuously. Different from `only_mop` — need to find the integer property array address in AVA's heap/data segment.
-2. **Block piid:13 fan activation**: Intercept the miio_agent→AVA TCP 54320 channel and filter/modify piid:13 messages to prevent the CleanMode reset.
-3. **MCU CLEANSET intercept**: Intercept `/dev/ttyS3` writes (fd 26 of AVA) to suppress fan motor commands. Risk: conflicts with AVA.
-
-**What doesn't work**:
-- `avacmd msg_cvt '{"type":"msgCvt","cmd":"set_prop","prop":"clean_mode","value":"1"}'` → `{}` (not supported)
-- `avacmd clb '{"type":"clb","cmd":"set_clean_mode","value":1}'` → `{}` (not exposed)
-- `miio_send_line '{"method":"set_properties","params":[{"siid":4,"piid":7,"value":1}]}'` → only sends to provisioning helper port (54323), not device command channel
-- `chattr +i clean_parameter.json` → ext4 on `/data/` does not support immutable flag on kernel 4.9.191
-- `CleanMode:1` in `clean_parameter.json` → AVA resets to CleanMode=0 on every piid:13 write
-- `only_mop=1` heap patch (set_only_mop.py) → patches different key, CleanMode still reset to 0
-- `FanSpeedControlCapability "low"` at boot (t≈90s) → fan already running since t≈22s; command may not affect running fan in RemoteCtrlMode
-
-#### Corrected diagnosis (2026-06-15 — why every prior attempt failed)
-
-Three concrete findings from live investigation:
-
-1. **`patch_cleanmode.py` was never wired into boot.** `_root_postboot.sh` only launches
-   `set_only_mop.py` (line 97). The ptrace patch sits unused at
-   `/data/chroot/usr/local/bin/patch_cleanmode.py` and has effectively never been applied.
-2. **`set_only_mop.py` holds the wrong memory address** — see Method 2 above. Daemon says
-   `CleanMode=1`, `get_prop clean_mode` says `0`. No-op.
-3. **The premise "hold CleanMode=1 → fan off in manual mode" is unproven and incomplete.**
-   In `/tmp/log/log_0`, `type=0` (CleanMode) is written with values **0, 1, AND 3**.
-   CleanMode is only defined 0/1/2 — the `value=3` writes mean `type=0` carries more than
-   clean-mode, or AVA has fan paths independent of it. The documented "`fan_speed` 0 reverts
-   to 3 (max)" confirms something re-asserts max fan downstream of the property layer.
-
-Confirmed-correct parts of the model: at boot AVA loads `CleanMode=1` from
-`clean_parameter.json` (`log_0` line ~81: `WritePropInt type=0 value=1`). The boot
-`WritePropInt` order maps cleanly: `type=0`=CleanMode, `type=1`=CleanMop, `type=17`=
-CarpetPressState(=2), `type=23`=StreamerSwitch(=3) — matches `clean_parameter.json`.
-`log_0` line ~1471 shows AVA resetting `type=0` to `0` **mid** piid:13 remote-control
-session (the `{"spdv":..,"spdw":..,"audio":..}` joystick writes). So the *trigger* is
-understood; the *intervention point* was always ineffective.
-
-No declarative escape hatch: `setting.yaml` and `r2250.conf` have no fan/remote/mop knob;
-the behavior tree is compiled in `/usr/lib/tree_lib/`.
-
-#### Chosen approach: MCU CLEANSET fan-byte filter (LD_PRELOAD shim)
-
-The fan motor is driven by the MCU based on a `CLEANSET` frame AVA writes to `/dev/ttyS3`
-(AVA fd 26). That serial byte is the **single chokepoint** — fan spins iff that byte is
-nonzero, regardless of CleanMode / fan_speed / only_mop / work_mode. Filter it and the fan
-is guaranteed off in every mode, while brush/pump (also in CLEANSET) and `MOVE_CTRL`
-(driving) pass through untouched.
-
-**Recon facts that make `LD_PRELOAD` the right interposition (vs a pty proxy):**
-
-| Fact | Value | Source |
-|------|-------|--------|
-| AVA linkage | dynamic, **glibc 2.23** (`/lib/libc-2.23.so`) | `/proc/$(pidof ava)/maps` |
-| AVA launch | `ava -f /ava/conf/r2250.conf force &` in `/etc/rc.d/ava.sh` (plain shell exec) | read |
-| Injection point | bind-mount a patched `ava.sh` exporting `LD_PRELOAD` (squashfs file → override from `/data`, same trick as `wpa_supplicant.conf`); must be in place before app start, so set it in `_root.sh` | — |
-| `ttyS3` device | char **major 248, minor 3** (`ttyS4`/LiDAR = 248,4) | `ls -l /dev/ttyS3` |
-| AVA fd → device | fd 26 → `/dev/ttyS3`, fd 24 → `/dev/ttyS4` | `/proc/$(pidof ava)/fd/` |
-| MCU framing | `55 AA …` prefixed (per existing notes); frame layout TBD by capture | — |
-| Toolchain | native `aarch64-linux-gnu-gcc-13` + `strace` in Ubuntu chroot (`/data/chroot`) | `ls` |
-
-**glibc-version trap (critical):** the chroot is Ubuntu 24.04 / glibc 2.39. A shim compiled
-normally there will pull `GLIBC_2.3x` symbol deps and **fail to load** under AVA's glibc 2.23.
-The shim is therefore written **freestanding** (`-nostdlib -ffreestanding`): it exports
-`write`/`writev`, performs the real I/O via raw `svc #0` syscalls, and uses hand-rolled
-memory helpers — zero glibc symbol dependencies, loads cleanly under 2.23.
-
-**Frame detection is fd-agnostic:** the shim keys off the `55 AA` magic at the start of the
-write buffer rather than a hardcoded fd number (fd 26 is not guaranteed stable across boots).
-
-**Implementation kit (in `scripts/robot/`):**
-
-| File | Role |
-|------|------|
-| `fanoff_shim.c` | The shim. Two compile-time modes: `MODE_LOG` (passthrough + dump every `55 AA` frame to `/tmp/mcu_tx.log`) and `MODE_FILTER` (rewrite CLEANSET fan byte → 0, recompute checksum, near-zero overhead). Frame constants (`CLEANSET` cmd id, fan offset, checksum spec) are marked `TODO` — fill from capture. |
-| `build_fanoff.sh` | Compiles both `libfanoff_log.so` and `libfanoff_filter.so` inside the chroot with freestanding flags. |
-| `capture_cleanset.sh` | Phase-1 capture harness: deploys the LOG shim, drives the robot through known fan states (idle = fan off, manual-control enable = fan on/stationary), pulls `/tmp/mcu_tx.log` for offline decode. |
-| `deploy_fanoff.sh` | Bind-mounts a patched `ava.sh` with `export LD_PRELOAD=/data/lib/libfanoff_filter.so`, restarts AVA, verifies the lib is mapped. |
-
-**Step-by-step plan / where we are:**
-
-1. ✅ Recon (linkage, launch, devices, toolchain) — done, recorded above.
-2. ⬜ **Phase 1 — capture.** Build LOG shim, run `capture_cleanset.sh`, collect `CLEANSET`
-   frames for fan-OFF (idle) and fan-ON (manual-control enabled, stationary). **Needs the
-   user to confirm fan audibly + ideally vary fan speed presets so each speed → distinct byte.**
-3. ⬜ **Phase 2 — decode.** Diff frames to locate: the `CLEANSET` command id, the fan-power
-   byte offset, and the checksum algorithm (guess: sum of bytes `[2 .. len-1] mod 256` — verify).
-4. ⬜ **Phase 3 — fill constants in `fanoff_shim.c`, build FILTER shim, deploy** via
-   `deploy_fanoff.sh`. Verify: fan silent in manual nav, driving + brush/pump still work.
-5. ⬜ **Phase 4 — cleanup.** Once confirmed, remove the dead `set_only_mop.py` /
-   `patch_cleanmode.py` / `FanSpeedControlCapability` machinery from the boot path.
-
-**Risks to watch:** (a) AVA may batch multiple frames per `write()` or split a frame across
-writes — capture confirms; shim scans for *all* `55 AA` frames in the buffer and only rewrites
-in place (length-preserving, so the byte count returned to AVA is unchanged). (b) If AVA uses
-`writev`/buffered FILE* instead of raw `write`, hook `writev` too (capture/strace confirms which).
-(c) MCU may have a fan-stall/no-current fault — if AVA errors when fan never spins, fall back to
-rewriting to a minimum nonzero value, or accept the fault if it doesn't block driving.
+**Dead ends — do NOT retry** (none gate the fan in manual/remote mode): `clean_parameter.json` `CleanMode`, the `only_mop` heap patch (`set_only_mop.py`), `patch_cleanmode.py`, the `FanSpeedControlCapability` boot loop. This machinery should be stripped from the boot path.
 
 ### Valetudo REST API capabilities
 
@@ -522,7 +379,7 @@ Base URL: `http://192.168.1.213` (or `http://localhost` from on-robot)
 | BasicControlCapability | `/api/v2/robot/capabilities/BasicControlCapability` | — | `{"command":"start"/"stop"/"pause"/"home"}` |
 | FanSpeedControlCapability | `/api/v2/robot/capabilities/FanSpeedControlCapability/preset` | `{"value":"low"}` | `{"name":"low"/"medium"/"high"/"max"}` → MIIO siid:4 piid:4 |
 | WaterUsageControlCapability | `/api/v2/robot/capabilities/WaterUsageControlCapability/preset` | `{"value":"low"}` | `{"name":"low"/"medium"/"high"}` |
-| HighResolutionManualControlCapability | `/api/v2/robot/capabilities/HighResolutionManualControlCapability` | — | `{"operation":"enable"/"disable"/"move","velocity":N,"angle":N}` |
+| HighResolutionManualControlCapability | `/api/v2/robot/capabilities/HighResolutionManualControlCapability` | — | `{"action":"enable"/"disable"}` or `{"action":"move","vector":{"velocity":0..1,"angle":N}}` |
 | QuirksCapability | `/api/v2/robot/capabilities/QuirksCapability` | quirk array | PUT `{"id":"...","value":"low"/"medium"/"high"}` — only exposes Carpet Mode Sensitivity |
 | CarpetModeControlCapability | `/api/v2/robot/capabilities/CarpetModeControlCapability` | `{"enabled":false}` | `{"enabled":true/false}` |
 | CleanRouteControlCapability | `/api/v2/robot/capabilities/CleanRouteControlCapability` | `{"route":"normal"}` | `{"route":"normal"/"..."}` |
@@ -540,92 +397,39 @@ Base URL: `http://192.168.1.213` (or `http://localhost` from on-robot)
 
 ### HighResolutionManualControlCapability (manual driving)
 
-Enables joystick-style manual control. Sends MIIO property `{"siid":X,"piid":15,"value":{"spdv":N,"spdw":N,"audio":"true","random":N}}`. Puts AVA into work_mode 17.
+Joystick-style manual control. **Verified REST schema** (Valetudo uses `action`, not `operation`):
 
-**Enabling from REST:**
 ```bash
+# enable / disable
 curl -X PUT http://192.168.1.213/api/v2/robot/capabilities/HighResolutionManualControlCapability \
-  -H 'Content-Type: application/json' \
-  -d '{"operation":"enable"}'
+  -H 'Content-Type: application/json' -d '{"action":"enable"}'      # or {"action":"disable"}
+
+# move (Valetudo schema: velocity 0..1, angle degrees)
+curl -X PUT http://192.168.1.213/api/v2/robot/capabilities/HighResolutionManualControlCapability \
+  -H 'Content-Type: application/json' -d '{"action":"move","vector":{"velocity":0.2,"angle":0}}'
 ```
 
-**Moving:**
-```bash
-curl -X PUT http://192.168.1.213/api/v2/robot/capabilities/HighResolutionManualControlCapability \
-  -H 'Content-Type: application/json' \
-  -d '{"operation":"move","velocity":N,"angle":N}'
+`{"operation":...}` / top-level `velocity`/`angle` are WRONG and return HTTP 400. Enabling manual control spins the vacuum fan at the MCU — suppressed by the SetCleaning filter (see the Vacuum fan disable section).
+
+### MCU serial communication (ttyS4)
+
+AVA talks to the MCU (wheels, vacuum fan, brushes, pump, IMU/sensor telemetry) over **`/dev/ttyS4`** (opened on a dynamic fd, observed as fd 24). `/dev/ttyS3` (fd 26) is held open but had **zero writes** in every capture — read-mostly (LiDAR). AVA only frames + CRCs the bytes; packet *content* is a separate layer (`node_signal.so` builds messages, `node_com.so` does framing). LiDAR is processed by `node_lib.lds`. Command socket: `/tmp/avacmd.socket`.
+
+**Frame format** (matches `github.com/alufers/dreame_mcu_protocol`, cloned at `~/dreame_mcu_protocol`):
 ```
+3c <len> <type> <payload[len]> <crc_hi> <crc_lo> 3e
+```
+- `3c`/`3e` = start/end; `3f` = escape (a literal `3c`/`3e`/`3f` in the body is preceded by `3f`).
+- `crc` = **Modbus CRC16** over `len+type+payload`, big-endian (verified — reproduces every captured frame; table ported into `fanoff_shim.c`).
 
-`velocity`: forward/backward speed (positive=forward), `angle`: turning rate (positive=left).
+**SoC→MCU packet types we rely on:**
+| type | name | payload | notes |
+|------|------|---------|-------|
+| 0x00 | MotorCtrl | flag + 2×float32 | wheel linear/rotational velocity (driving) — `3c 09 00 …` |
+| 0x01 | SetCleaning | f1 f2 f3 f4 f5 | **f3 = vacuum fan level** (low/med=3, max=5, off=0); f1/f2 = brush/pump — `3c 05 01 …` |
+| 0x02 | SetButtonLEDState | 1 byte | LED state; doubles as a heartbeat |
 
-**Warning**: Without CleanMode:1 (mop-only), enabling manual control also starts the vacuum fan.
-
-### MCU serial communication (ttyS3)
-
-AVA communicates with the MCU (motor controller) via `/dev/ttyS3` at 230400 baud. Protocol: binary, `55 AA`-prefixed framing. AVA holds fd 26 open to this device.
-
-> **CORRECTION (2026-06-15, from live strace of AVA writes) — the above was WRONG:**
-> - The active MCU command/telemetry channel is **fd 24 → `/dev/ttyS4`**, NOT fd 26/ttyS3.
->   In every capture (idle docked, and attempted manual control), **fd 26/ttyS3 had ZERO
->   writes**; all traffic was on fd 24/ttyS4.
-> - The framing is **`3c … 3e`** (`<` … `>`), **NOT `55 AA`**. Layout looks like
->   `3c <cmd> <payload...> <crc16-2bytes> 3e`. Observed frame types (cmd = 2nd byte):
->   - `3c 09 00 01 00 00 00 00 00 00 00 00 e8 25 3e` (15B) — high-rate heartbeat/keepalive,
->     constant regardless of fan speed
->   - `3c 04 0f <…> <ts> <crc> 3e` (10–11B) — periodic status w/ rising timestamp byte
->   - `3c 02 14 04 00 58 43 3e` (8B), `3c 01 02 21 78 e1 3e` (7B), `3c 05 01 01 01 00 00 00 ed 73 3e` (11B) — occasional
-> - The two bytes before the trailing `3e` are a **CRC16** (not a 1-byte sum) — the shim's
->   checksum routine must implement the real CRC (algorithm TBD from fan-on capture).
-> - **The fan-command frame has NOT been identified yet** — manual control `enable` returns
->   HTTP 400 while the robot is docked / in work_mode 14, so we have never captured a genuine
->   fan-ON state. All captures so far are idle dock housekeeping. NEXT: capture fd 24 (AND
->   fd 26, in case motors light it up only when moving) during real motion — requires the
->   robot undocked/idle (work_mode 6) and a human to confirm the fan audibly.
-> - **`fanoff_shim.c` `MAGIC`/`CLEANSET_CMD`/`FAN_OFFSET`/`cksum` are all still placeholders**
->   and must be rebuilt around the `3c…3e` protocol once the fan frame is captured.
-
-#### SOLVED 2026-06-15 (late) — fan command identified, filter built & verified
-
-**Protocol fully cracked** (matches `~/dreame_mcu_protocol`, the alufers repo; artifacts pulled to `~/dreame-re/{mcu.bin,node_signal.so}` for any future RE):
-- Channel: **fd → `/dev/ttyS4`** (ttyS3 is unused). Frame: `3c <len> <type> <payload> <crc_hi> <crc_lo> 3e`, `?`=escape, **Modbus CRC16** over `len+type+payload` (algorithm reproduces every captured frame exactly).
-- **Fan command = type `0x01` (SetCleaning)**, 5-byte payload `f1..f5`. Sweeping the Valetudo fan preset in manual nav showed **only `payload[2]` (f3)** tracks fan speed: low/med=`03`, max=`05`, docked-off=`00`. `f1`(0x55)/`f2`(0x58) are brush/pump and are left untouched.
-- **Fix:** zero `payload[2]`, recompute CRC → e.g. `3c 05 01 55 58 03 00 00 bd a0 3e` (max-ish) becomes `3c 05 01 55 58 00 00 00 bd 50 3e`.
-- **Manual nav REST payload is `{"action":"enable"}`/`{"action":"disable"}`** (NOT `{"operation":...}` — that 400s). This was the cause of all the earlier HTTP 400s, not work_mode.
-
-**`fanoff_shim.c` rewritten for this protocol and built** (`/data/lib/libfanoff_filter.so`, freestanding, loads under glibc 2.23): hooks `write`/`writev`, detects `3c` frames fd-agnostically, zeros `f3` of type-0x01 frames + recomputes CRC (with `?`-escaping), passes everything else verbatim.
-
-**Remaining: deploy + verify.** `deploy_fanoff.sh` bind-mounts a patched `ava.sh` exporting `LD_PRELOAD=/data/lib/libfanoff_filter.so` and restarts AVA. Verify objectively by stracing ttyS4 in manual nav at max preset → SetCleaning frames should show `f3=00`; confirm fan audibly silent + driving/brush still work. Then persist by adding the bind-mount to `_root.sh` before app start, and remove the dead `set_only_mop.py`/`patch_cleanmode.py`/`FanSpeedControlCapability` machinery.
-
----
-_Historical investigation notes (superseded by the SOLVED block above):_
-
-#### Session progress 2026-06-15 (eve) — RESUME HERE
-
-Captured AVA serial writes (strace) across idle / fan-on-stationary / driving. Key results:
-- **fd 26 / ttyS3: ZERO writes in every state** — the documented "CLEANSET on ttyS3" is dead.
-- fd 24 / ttyS4 steady cycle (~2s): `3c 02 14 04 00 58 43 3e` · `3c 01 02 02 a1 a0 3e` · `3c 05 01 00 01 00 00 00 2d 4e 3e`.
-- `3c 09 …` = wheel/motion (LE-float velocities while driving, all-zero when still).
-- `3c 04 0f …` = periodic status w/ rising timestamp byte.
-- **CRITICAL:** fan-ON-but-stationary (`fan_speed=max`) is byte-for-byte ≈ idle-docked → there is **no continuous fan-power byte** in AVA's serial output.
-- During driving, `3c 02 14 04` byte5 flips `00→01` = a MOVING flag (not fan).
-
-**Open question to resolve first:** is the fan command (a) a **one-shot at the on/off transition** (→ filterable by the shim), or (b) **MCU-autonomous** — the MCU spins the fan itself on a clean/move-mode command and AVA never emits fan power (→ LD_PRELOAD fan-byte filter is **infeasible**; pivot to filtering the mode/clean command, or hardware fan disconnect).
-
-**Blocker:** tight-timed transition captures missed the toggle 3×. Note: manual-control REST `enable` returns **HTTP 400 while docked** (work_mode 14); the user triggers fan-on via the normal Valetudo manual-nav flow.
-
-**Next step (staged & ready):** `/tmp/cap6.sh` on the robot = 35s strace, time-ordered non-noise fd24+fd26. Run it in the background, have the user **toggle manual-nav ON/OFF 2–3 times (stationary)** during the window. Find a frame that **breaks the steady ~2s cycle** near each toggle:
-- one-shot frame exists → that's the fan/clean command. Decode the fan byte + solve the CRC16 params from the many frame+trailer pairs already captured, then rework the `3c…3e` constants in `fanoff_shim.c` and build `MODE_FILTER`.
-- nothing distinct appears → case (b); abandon the serial filter, go hardware / mode-command route.
-
-**Loose ends:** in-memory `patch_cleanmode.py` still active in AVA pid 1543 (harmless, clears on reboot). `fan_speed` left at `max` preset from capture (irrelevant docked; boot resets it).
-
-**MCU pub/sub message types** (internal to AVA, not directly accessible externally):
-- `CLEANSET` — sets motor speeds (fan, brush, pump)
-- `MOVE_CTRL` — sets wheel velocity
-- `BUTTONLED` — controls LEDs
-- `ROBOTMODE` — sets robot operating mode
-
-Direct MCU serial access would conflict with AVA. Use avacmd/Valetudo API instead.
+MCU→SoC status packets (odometry, IMU, battery, triggers, …) are in the repo's `mcu_packets.py`. Firmware dumped to `~/dreame-re/mcu.bin` for Ghidra. To modify the stream, interpose via `LD_PRELOAD` on AVA — do not open the serial directly (conflicts with AVA).
 
 ### avaexec socket
 
@@ -693,9 +497,9 @@ scripts/
     camera_stream.sh       run in robot chroot to stream /dev/video0
     audio_server.py        run in robot chroot to serve audio playback
     dreame-wifi-setup.sh   e2e script: connect AP → deploy → reconnect 5K
-    fanoff_shim.c          LD_PRELOAD shim: rewrites MCU CLEANSET fan byte → 0 (freestanding)
+    fanoff_shim.c          LD_PRELOAD shim: rewrites MCU SetCleaning fan byte (f3) → 0 (freestanding)
     build_fanoff.sh        compile shim in chroot (log + filter .so), glibc-2.23-safe
-    capture_cleanset.sh    Phase-1: capture MCU 55 AA frames across fan states (needs human)
+    capture_cleanset.sh    capture MCU 3c..3e frames across fan states
     deploy_fanoff.sh       bind-mount patched ava.sh exporting LD_PRELOAD, restart + verify
     set_only_mop.py        DEAD — holds wrong heap address (no-op); see fan-disable section
     patch_cleanmode.py     UNUSED — never wired into boot; superseded by MCU filter

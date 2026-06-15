@@ -6,6 +6,21 @@ LOG=/tmp/root_sh.log
 exec >> "$LOG" 2>&1
 echo "=== _root.sh start $(date) ==="
 
+# Vacuum fan disable — preload the MCU SetCleaning filter into AVA so the vacuum fan
+# never spins in manual nav / cleaning. The shim zeros the SetCleaning f3 byte on the
+# wire to /dev/ttyS4 and recomputes the CRC. See CLAUDE.md "Vacuum fan disable".
+# Must be established before app start runs /etc/rc.d/ava.sh (this is the early hook).
+FANOFF=/data/lib/libfanoff_filter.so
+if [ -f "$FANOFF" ]; then
+    head -1 /etc/rc.d/ava.sh > /data/ava.sh.preload
+    echo "export LD_PRELOAD=$FANOFF" >> /data/ava.sh.preload
+    tail -n +2 /etc/rc.d/ava.sh >> /data/ava.sh.preload
+    chmod +x /data/ava.sh.preload
+    mount --bind /data/ava.sh.preload /etc/rc.d/ava.sh
+    echo "fanoff: LD_PRELOAD shim bind-mounted onto ava.sh"
+    logger -t root_sh "fanoff shim preload bind-mounted"
+fi
+
 # Patch CleanMode before anything else (AVA may start fast).
 if [ -f /data/config/ava/clean_parameter.json ]; then
     sed -i 's/"CleanMode":[0-9]/"CleanMode":1/' /data/config/ava/clean_parameter.json
