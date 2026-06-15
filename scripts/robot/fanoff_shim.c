@@ -86,6 +86,22 @@ static unsigned short crc16(const unsigned char *p, unsigned long n) {
 
 static int is_special(unsigned char b) { return b == FRAME_START || b == FRAME_END || b == FRAME_ESC; }
 
+/* Policy:
+ *   - Vacuum fan (SetCleaning): filtered UNCONDITIONALLY — the fan is off in every mode.
+ *     No flag, no daemon, no race (the loud motor never depends on timing).
+ *   - LiDAR turret (_CtrlMcuCMD 0x04): off ONLY in manual navigation; must keep running in
+ *     all other modes (mapping, go-to, autonomous, etc.). The LiDAR is BLOCKED by default and
+ *     allowed only while /tmp/lidar_allow exists. The gate daemon (fanoff_flag.sh) creates that
+ *     flag whenever the robot is in an active non-manual mode and removes it for manual_control
+ *     / idle / docked. Because manual nav AND idle both leave the flag absent, entering manual
+ *     nav never transitions out of "blocked" → no LiDAR start-up blip / race. (At idle the LiDAR
+ *     is parked by AVA anyway, so blocking there is a no-op.) */
+#define SYS_faccessat 48
+static int lidar_blocked(void) {
+    static const char p[] = "/tmp/lidar_allow";
+    return sys3(SYS_faccessat, AT_FDCWD, (long)p, 0) != 0;   /* block LiDAR unless allow flag present */
+}
+
 #ifdef MODE_LOG
 static int log_fd = -2;
 static void log_bytes(const unsigned char *b, unsigned long n) {
@@ -131,7 +147,7 @@ static unsigned long process(const unsigned char *in, unsigned long n, unsigned 
             content[3] = 0x01;                 /* f2 (idle value observed when docked) */
             for (unsigned long k = 4; k < 2 + (unsigned long)len; k++) content[k] = 0;
             rewrite = 1;
-        } else if (valid && content[1] == TYPE_CTRLMCU && len >= 2 && content[2] == LDS_SUBCMD) {
+        } else if (valid && content[1] == TYPE_CTRLMCU && len >= 2 && content[2] == LDS_SUBCMD && lidar_blocked()) {
             /* LiDAR turret OFF: _CtrlMcuCMD subcmd 0x04 toggles the LDS motor (1=on when
              * navigating, 0=off when docked). Force value 0 so the turret never spins.
              * NOTE: AVA loses LDS data / localization; fine for an AI rover that navigates

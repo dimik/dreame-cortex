@@ -70,6 +70,12 @@ logger -t postboot "starting Valetudo"
     sleep 5
 done) &
 
-# Vacuum fan is suppressed at the MCU level by the LD_PRELOAD SetCleaning filter
-# (preloaded onto AVA in _root.sh). No fan_speed/only_mop workarounds needed here.
+# LiDAR gate for the fanoff shim. The shim (preloaded onto AVA in _root.sh) always filters the
+# vacuum fan; this daemon allows the LiDAR turret to run in active non-manual modes and blocks
+# it during manual navigation (creates/removes /tmp/lidar_allow from Valetudo status). The fan
+# is unconditional, so there is no race on the loud motor; the LiDAR is blocked-by-default so
+# manual nav has no turret spin-up blip either.
+echo "starting fanoff LiDAR gate..."
+(setsid sh /data/fanoff_flag.sh </dev/null >/dev/null 2>&1 &)
+logger -t postboot "fanoff LiDAR gate started"
 echo "=== _root_postboot.sh complete $(date) ==="
