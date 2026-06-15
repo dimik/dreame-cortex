@@ -349,11 +349,12 @@ Note: `CleanMode` (`WritePropInt type=0`) is a property-store/behavior-tree valu
 
 **Goal**: drive the robot in manual navigation (`HighResolutionManualControlCapability`) without the vacuum fan running.
 
-**Solution (deployed & verified 2026-06-15):** an `LD_PRELOAD` shim on AVA rewrites the fan-level byte of the MCU `SetCleaning` packet to 0. This is the single chokepoint — the fan spins iff that byte is nonzero, independent of any AVA property/mode/work_mode. Verified live: with manual nav enabled and the Valetudo fan preset at **max**, the SetCleaning frame on the wire is `3c 05 01 55 58 00 00 00 bd 50 3e` (fan byte `f3=00`), while MotorCtrl (driving) keeps flowing and the brush/pump bytes (`f1`,`f2`) are untouched. AVA stays healthy.
+**Solution (deployed & verified 2026-06-15):** an `LD_PRELOAD` shim on AVA rewrites the MCU `SetCleaning` packet to the docked-idle pattern so the vacuum fan (and brushes/pump) stay off. This is the single chokepoint — the cleaning motors run only if `SetCleaning` carries nonzero power, independent of any AVA property/mode/work_mode. Verified live: with manual nav enabled and the Valetudo fan preset at **max**, the SetCleaning frame on the wire is `3c 05 01 00 01 00 00 00 2d 4e 3e` (the idle pattern), while MotorCtrl (driving) keeps flowing. AVA stays healthy.
 
 **How the fan is controlled** (full protocol in the MCU serial section below):
-- Fan command = type `0x01` (`SetCleaning`) on `/dev/ttyS4`, 5-byte payload `f1..f5`. A live fan-preset sweep in manual nav showed **only `payload[2]` (f3)** tracks fan speed: low/med=`03`, max=`05`, off=`00`. `f1`/`f2` are brush/pump.
-- The shim (`fanoff_shim.c`) detects `3c`-framed packets, zeros `f3` of type-0x01 frames, recomputes the Modbus CRC16 (handling `?`-escaping), and passes everything else verbatim.
+- Fan command = type `0x01` (`SetCleaning`) on `/dev/ttyS4`, 5-byte payload `f1..f5`. Idle (docked) = `00 01 00 00 00`; cleaning/manual active = `55 58 03 00 00` (low/med) / `55 58 05 00 00` (max).
+- `f1`/`f2` carry the **base** fan/brush/pump power (jump `00 01`→`55 58` when active); `f3` is the fan **boost tier** (a fan-preset sweep changed only `f3`: low/med=`03`, max=`05`). **Zeroing only `f3` left the fan running at its base speed** — so the shim forces the whole payload to the idle pattern `00 01 00 00 00` instead.
+- The shim (`fanoff_shim.c`) detects `3c`-framed packets, rewrites type-0x01 payloads to `00 01 00 00 00`, recomputes the Modbus CRC16 (handling `?`-escaping), and passes everything else verbatim. (To keep brushes spinning and kill only the vacuum, identify the exact fan byte among `f1`/`f2` via `mcu.bin` RE — not yet done.)
 
 **Manual-nav REST payload** is `{"action":"enable"}` / `{"action":"disable"}` (the `{"operation":...}` form returns HTTP 400 — the real cause of the earlier "rejected" results, not work_mode).
 

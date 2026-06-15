@@ -119,8 +119,18 @@ static unsigned long process(const unsigned char *in, unsigned long n, unsigned 
         int is_setcleaning = (clen == len + 4u) && (content[1] == TYPE_SETCLEANING)
                              && (len > FAN_PAYLOAD_IDX);
 #ifdef MODE_FILTER
-        if (is_setcleaning && content[2 + FAN_PAYLOAD_IDX] != 0) {
-            content[2 + FAN_PAYLOAD_IDX] = 0;                 /* fan level -> off */
+        if (is_setcleaning) {
+            /* Force the cleaning motors to the docked-idle pattern so the vacuum fan
+             * stays OFF. Zeroing only f3 (fan boost tier) left the fan at a base speed,
+             * because f1/f2 carry the base fan/brush/pump power (idle 00 01 -> active
+             * 55 58 when cleaning/manual). The observed fan-OFF frame is payload
+             * 00 01 00 00 00, so we drive the whole SetCleaning payload to that:
+             * f1=0, f2=1, f3..f5=0. (This also stops the brushes/pump — desired for an
+             * AI rover in manual nav. To keep brushes, zero only the true fan byte once
+             * identified via mcu.bin RE.) */
+            content[2] = 0x00;                 /* f1 */
+            content[3] = 0x01;                 /* f2 (idle value observed when docked) */
+            for (unsigned long k = 4; k < 2 + (unsigned long)len; k++) content[k] = 0; /* f3.. */
             unsigned short crc = crc16(content, 2 + len);     /* over len+type+payload */
             content[2 + len]     = (unsigned char)(crc >> 8); /* big-endian trailer */
             content[2 + len + 1] = (unsigned char)(crc & 0xFF);
