@@ -553,7 +553,8 @@ scripts/
     _root.sh               deploy to /data/_root.sh on robot (CONTAINS WIFI CREDENTIALS)
     _root_postboot.sh      deploy to /data/_root_postboot.sh on robot
     chroot.sh              deploy to /data/chroot.sh on robot
-    camera_stream.sh       run in robot chroot to stream /dev/video0
+    camera_stream.sh       GStreamer stream of /dev/video0 (NOTE: gst not installed; video0 needs pipeline setup)
+    v4l2grab.c             multi-plane V4L2 frame grabber -> PPM (for /dev/video0 once pipeline is wired)
     audio_server.py        run in robot chroot to serve audio playback
     dreame-wifi-setup.sh   e2e script: connect AP → deploy → reconnect 5K
     fanoff_shim.c          LD_PRELOAD shim: fan off always + LiDAR off when blocked (freestanding)
@@ -577,6 +578,7 @@ companion/
 docs/
   hardware.md              wiring, power, physical setup
   wifi-hack.md             detailed explanation of the wpa_supplicant fix
+  sensors.md               sensors & data access (LiDAR, camera, IMU, mic) + how to read each
 ```
 
 **Important**: `scripts/robot/_root.sh` contains the WiFi PSK for the 4K network (2.4GHz home). Do not replace with placeholder values when deploying — this breaks WiFi connectivity.
