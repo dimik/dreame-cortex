@@ -361,6 +361,8 @@ Note: `CleanMode` (`WritePropInt type=0`) is a property-store/behavior-tree valu
 
 **Manual-nav REST payload** is `{"action":"enable"}` / `{"action":"disable"}` (the `{"operation":...}` form returns HTTP 400 — the real cause of earlier "rejected" results, not work_mode). Move: `{"action":"move","vector":{"velocity":0..1,"angle":N}}`.
 
+**Voice prompt ("Start remote controlled cleaning").** Entering manual nav makes AVA play that voice prompt. Silenced by muting the speaker: `PUT SpeakerVolumeControlCapability {"action":"set_volume","value":0}` (mutes ALL prompts; for a rover that's fine). Set live 2026-06-15. Dreame normally persists volume across reboot — if a reboot resets it, add a one-shot `set_volume 0` after Valetudo is up in `_root_postboot.sh`. Hardware fallback if ever needed: `amixer` is at `/bin/amixer` on the host. (Targeting only that one prompt would mean swapping its WAV — not worth it.)
+
 **Verified on the wire.** Manual nav → `SetCleaning` `00 01 00 00 00` (fan off) + ttyS3 LDS reads ~0 (turret parked) + `_CtrlMcuCMD 04 00`, with no fan/LiDAR start-up blip. With `/tmp/lidar_allow` present the LiDAR spins (~1700 reads/3s) while `SetCleaning` stays `00 01` — proving the fan is unconditional and the LiDAR is gated. MotorCtrl (driving) flows throughout; AVA healthy.
 
 **Deploy / persistence.**
@@ -369,6 +371,8 @@ Note: `CleanMode` (`WritePropInt type=0`) is a property-store/behavior-tree valu
 - Build with `build_fanoff.sh` (freestanding, glibc-2.23-safe). RE artifacts: `~/dreame-re/{mcu.bin,node_signal.so}`; protocol ref `~/dreame_mcu_protocol` (alufers).
 
 **Architecture (table-driven).** `fanoff_shim.c` is layered: raw syscalls → Modbus CRC16 → frame codec (3c..3e + `?` escaping) → **policy `RULES[]` table** → write/writev hooks. Each subsystem is ONE declarative rule — match `type` (+ optional first payload byte), a rewrite `action` (`REWRITE_SETCLEANING_IDLE` / `REWRITE_ZERO_BYTE`), and a `gate` (`GATE_ALWAYS` or `GATE_UNLESS_FLAG <path>`). To disable another subsystem later, add a rule — nothing else changes. (Do NOT gate the IMU — AVA needs it to drive.) The const table relocates correctly under the `-nostdlib` build (verified: AVA loads + runs).
+
+**Language choice (decided 2026-06-15).** The shim must be a native C-ABI `.so` LD_PRELOAD-ed into AVA (hooks libc `write`/`writev`, runs in AVA's glibc-2.23 address space on every MCU write) — so **C is the only practical fit**, and freestanding C neatly dodges the 2.23-vs-2.39 glibc mismatch with zero deps. **Python** can't be interposed in-process (would require an external pty proxy we rejected; no host Python anyway). **Nim→C** could emit a `.so` but you'd have to strip its runtime/GC to go freestanding and add a cross-toolchain — more complexity for a ~200-line file. The **`dreame_mcu_protocol` repo is Python for *offline* sniffing/decoding** (parses strace over SSH) — it can't run inside AVA; we already ported its CRC16 + packet defs into the shim and keep it as a decode/reference tool. The **gate** stays POSIX `sh` (no deps, runs on BusyBox host). Reserve Python/Rust for **Q6A companion** software (ROS/nav/vision), which isn't bound by AVA's runtime.
 
 **Implementation kit** (`scripts/robot/`): `fanoff_shim.c` (table-driven filter), `fanoff_flag.sh` (SSE LiDAR gate), `build_fanoff.sh`, `deploy_fanoff.sh`, `capture_cleanset.sh`.
 
@@ -397,7 +401,7 @@ Base URL: `http://192.168.1.213` (or `http://localhost` from on-robot)
 | MapSegmentationCapability | `/api/v2/robot/capabilities/MapSegmentationCapability` | — | segment clean commands |
 | ZoneCleaningCapability | `/api/v2/robot/capabilities/ZoneCleaningCapability` | — | zone clean commands |
 | GoToLocationCapability | `/api/v2/robot/capabilities/GoToLocationCapability` | — | `{"coordinates":{"x":N,"y":N}}` |
-| SpeakerVolumeControlCapability | `/api/v2/robot/capabilities/SpeakerVolumeControlCapability` | `{"value":N}` | `{"value":0-100}` |
+| SpeakerVolumeControlCapability | `/api/v2/robot/capabilities/SpeakerVolumeControlCapability` | `{"volume":N}` | `{"action":"set_volume","value":0-100}` — NOTE: `{"volume":N}` / `{"value":N}` both 400; the action wrapper is required |
 | ConsumableMonitoringCapability | `/api/v2/robot/capabilities/ConsumableMonitoringCapability` | consumable stats | — |
 | TotalStatisticsCapability | `/api/v2/robot/capabilities/TotalStatisticsCapability` | all-time stats | — |
 
@@ -506,6 +510,22 @@ ssh dreame-home 'curl -s http://localhost/api/v2/robot/capabilities/FanSpeedCont
 # Set fan to off (Valetudo "low" = MIIO 0 = off)
 ssh dreame-home 'curl -s -X PUT http://localhost/api/v2/robot/capabilities/FanSpeedControlCapability/preset \
   -H "Content-Type: application/json" -d '"'"'{"name":"low"}'"'"''
+
+# --- fanoff system (vacuum fan off always; LiDAR off only in manual nav) ---
+# Is the shim loaded into AVA?
+ssh dreame-home 'grep -q libfanoff_filter.so /proc/$(pidof ava)/maps && echo loaded || echo MISSING'
+# Is the event-driven LiDAR gate daemon running (holds the Valetudo SSE stream)?
+ssh dreame-home 'ps w | grep "[f]anoff_flag"'
+# LiDAR gate state: present = allowed (non-manual mode), absent = blocked (manual/idle)
+ssh dreame-home 'ls /tmp/lidar_allow 2>/dev/null && echo allowed || echo "blocked"'
+# Verify on the wire during manual nav (expect SetCleaning 00 01 = fan off, CtrlMcu 14 04 00 = LiDAR off):
+ssh dreame-home 'A=$(pidof ava); timeout 3 chroot /data/chroot strace -f -e trace=write -xx -s64 -p $A -o /tmp/x 2>/dev/null; grep -aoE "x3c.x05.x01.x..\x..|x3c.x02.x14.x04.x.." /data/chroot/tmp/x | sort | uniq -c'
+# Rebuild + reload shim after editing scripts/robot/fanoff_shim.c (scp it to /data first):
+ssh dreame-home 'sh /data/build_fanoff.sh && killall -9 ava'   # ava.sh relaunches with the new shim
+# Restart the LiDAR gate daemon (without reboot):
+ssh dreame-home 'pkill -f fanoff_flag; setsid sh /data/fanoff_flag.sh </dev/null >/dev/null 2>&1 &'
+# Mute voice prompts (e.g. manual-nav "Start remote controlled cleaning"):
+ssh dreame-home 'curl -s -X PUT http://localhost/api/v2/robot/capabilities/SpeakerVolumeControlCapability -H "Content-Type: application/json" -d '"'"'{"action":"set_volume","value":0}'"'"''
 
 # Deploy scripts to robot (e2e: AP connect → deploy → reboot → reconnect 5K)
 bash /tmp/robot-deploy.sh     # see scripts/robot/deploy.sh for the template
