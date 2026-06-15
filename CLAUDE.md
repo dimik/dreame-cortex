@@ -584,6 +584,21 @@ AVA communicates with the MCU (motor controller) via `/dev/ttyS3` at 230400 baud
 > - **`fanoff_shim.c` `MAGIC`/`CLEANSET_CMD`/`FAN_OFFSET`/`cksum` are all still placeholders**
 >   and must be rebuilt around the `3c…3e` protocol once the fan frame is captured.
 
+#### SOLVED 2026-06-15 (late) — fan command identified, filter built & verified
+
+**Protocol fully cracked** (matches `~/dreame_mcu_protocol`, the alufers repo; artifacts pulled to `~/dreame-re/{mcu.bin,node_signal.so}` for any future RE):
+- Channel: **fd → `/dev/ttyS4`** (ttyS3 is unused). Frame: `3c <len> <type> <payload> <crc_hi> <crc_lo> 3e`, `?`=escape, **Modbus CRC16** over `len+type+payload` (algorithm reproduces every captured frame exactly).
+- **Fan command = type `0x01` (SetCleaning)**, 5-byte payload `f1..f5`. Sweeping the Valetudo fan preset in manual nav showed **only `payload[2]` (f3)** tracks fan speed: low/med=`03`, max=`05`, docked-off=`00`. `f1`(0x55)/`f2`(0x58) are brush/pump and are left untouched.
+- **Fix:** zero `payload[2]`, recompute CRC → e.g. `3c 05 01 55 58 03 00 00 bd a0 3e` (max-ish) becomes `3c 05 01 55 58 00 00 00 bd 50 3e`.
+- **Manual nav REST payload is `{"action":"enable"}`/`{"action":"disable"}`** (NOT `{"operation":...}` — that 400s). This was the cause of all the earlier HTTP 400s, not work_mode.
+
+**`fanoff_shim.c` rewritten for this protocol and built** (`/data/lib/libfanoff_filter.so`, freestanding, loads under glibc 2.23): hooks `write`/`writev`, detects `3c` frames fd-agnostically, zeros `f3` of type-0x01 frames + recomputes CRC (with `?`-escaping), passes everything else verbatim.
+
+**Remaining: deploy + verify.** `deploy_fanoff.sh` bind-mounts a patched `ava.sh` exporting `LD_PRELOAD=/data/lib/libfanoff_filter.so` and restarts AVA. Verify objectively by stracing ttyS4 in manual nav at max preset → SetCleaning frames should show `f3=00`; confirm fan audibly silent + driving/brush still work. Then persist by adding the bind-mount to `_root.sh` before app start, and remove the dead `set_only_mop.py`/`patch_cleanmode.py`/`FanSpeedControlCapability` machinery.
+
+---
+_Historical investigation notes (superseded by the SOLVED block above):_
+
 #### Session progress 2026-06-15 (eve) — RESUME HERE
 
 Captured AVA serial writes (strace) across idle / fan-on-stationary / driving. Key results:
