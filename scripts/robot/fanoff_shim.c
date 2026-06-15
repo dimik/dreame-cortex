@@ -81,6 +81,8 @@ static unsigned short crc16(const unsigned char *p, unsigned long n) {
 #define FRAME_ESC   0x3f
 #define TYPE_SETCLEANING 0x01
 #define FAN_PAYLOAD_IDX  2          /* f3 within the 5-byte SetCleaning payload */
+#define TYPE_CTRLMCU     0x14       /* _CtrlMcuCMD: payload = <subcmd> <value> */
+#define LDS_SUBCMD       0x04       /* subcmd 0x04 = LDS (lidar turret) motor enable; 1=on 0=off */
 
 static int is_special(unsigned char b) { return b == FRAME_START || b == FRAME_END || b == FRAME_ESC; }
 
@@ -116,21 +118,28 @@ static unsigned long process(const unsigned char *in, unsigned long n, unsigned 
 #endif
         /* content = [len][type][payload(len)][crc_hi][crc_lo] ; total = len+4 */
         unsigned int len = content[0];
-        int is_setcleaning = (clen == len + 4u) && (content[1] == TYPE_SETCLEANING)
-                             && (len > FAN_PAYLOAD_IDX);
+        int valid = (clen == len + 4u);
 #ifdef MODE_FILTER
-        if (is_setcleaning) {
-            /* Force the cleaning motors to the docked-idle pattern so the vacuum fan
-             * stays OFF. Zeroing only f3 (fan boost tier) left the fan at a base speed,
-             * because f1/f2 carry the base fan/brush/pump power (idle 00 01 -> active
-             * 55 58 when cleaning/manual). The observed fan-OFF frame is payload
-             * 00 01 00 00 00, so we drive the whole SetCleaning payload to that:
-             * f1=0, f2=1, f3..f5=0. (This also stops the brushes/pump — desired for an
-             * AI rover in manual nav. To keep brushes, zero only the true fan byte once
-             * identified via mcu.bin RE.) */
+        int rewrite = 0;
+        if (valid && content[1] == TYPE_SETCLEANING && len >= 2) {
+            /* Vacuum fan OFF: force the cleaning motors to the docked-idle pattern.
+             * Zeroing only f3 (fan boost tier) left the fan at base speed because f1/f2
+             * carry the base fan/brush/pump power (idle 00 01 -> active 55 58). Observed
+             * fan-OFF frame payload is 00 01 00 00 00, so drive the whole payload there.
+             * (Also stops brushes/pump — desired for an AI rover.) */
             content[2] = 0x00;                 /* f1 */
             content[3] = 0x01;                 /* f2 (idle value observed when docked) */
-            for (unsigned long k = 4; k < 2 + (unsigned long)len; k++) content[k] = 0; /* f3.. */
+            for (unsigned long k = 4; k < 2 + (unsigned long)len; k++) content[k] = 0;
+            rewrite = 1;
+        } else if (valid && content[1] == TYPE_CTRLMCU && len >= 2 && content[2] == LDS_SUBCMD) {
+            /* LiDAR turret OFF: _CtrlMcuCMD subcmd 0x04 toggles the LDS motor (1=on when
+             * navigating, 0=off when docked). Force value 0 so the turret never spins.
+             * NOTE: AVA loses LDS data / localization; fine for an AI rover that navigates
+             * via the companion board. Does NOT affect cliff/IR sensors (different subcmd). */
+            content[3] = 0x00;                 /* value -> off */
+            rewrite = 1;
+        }
+        if (rewrite) {
             unsigned short crc = crc16(content, 2 + len);     /* over len+type+payload */
             content[2 + len]     = (unsigned char)(crc >> 8); /* big-endian trailer */
             content[2 + len + 1] = (unsigned char)(crc & 0xFF);
@@ -144,7 +153,7 @@ static unsigned long process(const unsigned char *in, unsigned long n, unsigned 
             continue;
         }
 #else
-        (void)is_setcleaning; (void)len;
+        (void)valid; (void)len;
 #endif
         while (i < j) out[o++] = in[i++];   /* copy frame verbatim */
     }

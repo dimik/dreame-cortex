@@ -356,6 +356,8 @@ Note: `CleanMode` (`WritePropInt type=0`) is a property-store/behavior-tree valu
 - `f1`/`f2` carry the **base** fan/brush/pump power (jump `00 01`→`55 58` when active); `f3` is the fan **boost tier** (a fan-preset sweep changed only `f3`: low/med=`03`, max=`05`). **Zeroing only `f3` left the fan running at its base speed** — so the shim forces the whole payload to the idle pattern `00 01 00 00 00` instead.
 - The shim (`fanoff_shim.c`) detects `3c`-framed packets, rewrites type-0x01 payloads to `00 01 00 00 00`, recomputes the Modbus CRC16 (handling `?`-escaping), and passes everything else verbatim. (To keep brushes spinning and kill only the vacuum, identify the exact fan byte among `f1`/`f2` via `mcu.bin` RE — not yet done.)
 
+**LiDAR turret silencing (also in the shim):** the spinning LDS (laser turret on top; data on `/dev/ttyS3`/fd26) is the only other audible motor in manual nav. It's gated by `_CtrlMcuCMD` (MCU type `0x14`) subcmd `0x04`: `01`=spin (sent when navigating), `00`=parked (docked). The shim forces that byte to `0`, so the turret stays parked. Verified: the ttyS3 LDS read stream drops from ~1500/3s to ~0, driving still works, AVA stays up. **Caveat:** AVA then gets no LDS data, so its own localization/SLAM is blind — fine for a rover navigated by the companion board; to keep the LiDAR, delete the `TYPE_CTRLMCU`/`LDS_SUBCMD` branch in `fanoff_shim.c` and rebuild. Cliff/IR sensors use a different `0x14` subcmd and are unaffected.
+
 **Manual-nav REST payload** is `{"action":"enable"}` / `{"action":"disable"}` (the `{"operation":...}` form returns HTTP 400 — the real cause of the earlier "rejected" results, not work_mode).
 
 **Deploy / persistence:**
