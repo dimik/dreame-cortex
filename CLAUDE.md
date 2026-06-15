@@ -341,33 +341,36 @@ Key log files that are NOT user.log (which is from previous boots and goes silen
    - `WritePropString piid:13 {"spdv":0,"spdw":0,"audio":"true","random":N}` → RemoteCtrlMode entered
 4. Periodic keepalive piid:13 writes with `audio:false`
 
-Note: `CleanMode` (`WritePropInt type=0`) is a property-store/behavior-tree value; it does NOT gate the vacuum fan in manual/remote mode. The fan is driven solely by the MCU `SetCleaning` (`f3`) byte — see the Vacuum fan disable section. (Earlier theories that holding CleanMode=1 or `only_mop`=1 would stop the fan were disproven.)
+Note: `CleanMode` (`WritePropInt type=0`) is a property-store/behavior-tree value; it does NOT gate the vacuum fan in manual/remote mode. The fan is driven by the MCU `SetCleaning` packet — see the "Vacuum fan + LiDAR quieting" section. (Earlier theories that holding CleanMode=1 or `only_mop`=1 would stop the fan were disproven.)
 
 ---
 
-### Vacuum fan disable (SOLVED — MCU SetCleaning filter)
+### Vacuum fan + LiDAR quieting (SOLVED — MCU command filter)
 
-**Goal**: drive the robot in manual navigation (`HighResolutionManualControlCapability`) without the vacuum fan running.
+**Goal**: drive the robot in manual navigation (`HighResolutionManualControlCapability`) silently — no vacuum fan and no spinning LiDAR turret — while keeping the LiDAR available in every other mode.
 
-**Solution (deployed & verified 2026-06-15):** an `LD_PRELOAD` shim on AVA rewrites the MCU `SetCleaning` packet to the docked-idle pattern so the vacuum fan (and brushes/pump) stay off. This is the single chokepoint — the cleaning motors run only if `SetCleaning` carries nonzero power, independent of any AVA property/mode/work_mode. Verified live: with manual nav enabled and the Valetudo fan preset at **max**, the SetCleaning frame on the wire is `3c 05 01 00 01 00 00 00 2d 4e 3e` (the idle pattern), while MotorCtrl (driving) keeps flowing. AVA stays healthy.
+**Final design (deployed & verified 2026-06-15):** an `LD_PRELOAD` shim on AVA (`fanoff_shim.c`) rewrites two MCU command types on `/dev/ttyS4`:
+- **Vacuum fan — OFF in every mode (unconditional).** `SetCleaning` (type `0x01`) payloads are rewritten to the docked-idle pattern `00 01 00 00 00`, so fan/brush/pump never spin. No flag, no daemon, no race on the loud motor.
+- **LiDAR turret — off ONLY in manual nav.** `_CtrlMcuCMD` (type `0x14`) subcmd `0x04` (LDS motor: `01`=spin, `00`=park) is forced to `00`, but only while the LiDAR is *blocked*. The shim blocks the LiDAR BY DEFAULT and allows it while `/tmp/lidar_allow` exists. The gate daemon (`fanoff_flag.sh`) creates that flag in active non-manual modes and removes it for manual_control/idle/docked — so the turret keeps running for mapping/go-to/etc. and is parked only during manual driving.
 
-**How the fan is controlled** (full protocol in the MCU serial section below):
-- Fan command = type `0x01` (`SetCleaning`) on `/dev/ttyS4`, 5-byte payload `f1..f5`. Idle (docked) = `00 01 00 00 00`; cleaning/manual active = `55 58 03 00 00` (low/med) / `55 58 05 00 00` (max).
-- `f1`/`f2` carry the **base** fan/brush/pump power (jump `00 01`→`55 58` when active); `f3` is the fan **boost tier** (a fan-preset sweep changed only `f3`: low/med=`03`, max=`05`). **Zeroing only `f3` left the fan running at its base speed** — so the shim forces the whole payload to the idle pattern `00 01 00 00 00` instead.
-- The shim (`fanoff_shim.c`) detects `3c`-framed packets, rewrites type-0x01 payloads to `00 01 00 00 00`, recomputes the Modbus CRC16 (handling `?`-escaping), and passes everything else verbatim. (To keep brushes spinning and kill only the vacuum, identify the exact fan byte among `f1`/`f2` via `mcu.bin` RE — not yet done.)
+**Why this shape (race-free).** An earlier "filter only when status==manual_control" flag let AVA's first fan-on `SetCleaning` through before a 1 Hz poller set the flag → the fan blipped at full power for ~1s. Making the fan unconditional removes that. Making the LiDAR blocked-by-default means manual_control AND idle are both "blocked", so entering manual nav never transitions allowed→blocked mid-session → no turret spin-up blip either.
 
-**LiDAR turret silencing (also in the shim):** the spinning LDS (laser turret on top; data on `/dev/ttyS3`/fd26) is the only other audible motor in manual nav. It's gated by `_CtrlMcuCMD` (MCU type `0x14`) subcmd `0x04`: `01`=spin (sent when navigating), `00`=parked (docked). The shim forces that byte to `0`, so the turret stays parked. Verified: the ttyS3 LDS read stream drops from ~1500/3s to ~0, driving still works, AVA stays up. **Caveat:** AVA then gets no LDS data, so its own localization/SLAM is blind — fine for a rover navigated by the companion board; to keep the LiDAR, delete the `TYPE_CTRLMCU`/`LDS_SUBCMD` branch in `fanoff_shim.c` and rebuild. Cliff/IR sensors use a different `0x14` subcmd and are unaffected.
+**Fan byte detail.** `SetCleaning` payload `f1..f5`: idle=`00 01 00 00 00`; active=`55 58 03 00 00` (low/med) / `55 58 05 00 00` (max). `f1`/`f2` are the base fan/brush/pump power; `f3` is the fan boost tier (a Valetudo fan-preset sweep changed only `f3`). Zeroing only `f3` left the fan at base speed, so the shim forces the whole payload to idle. (Killing only the vacuum while keeping brushes would need the exact fan byte among `f1`/`f2` via `mcu.bin` RE — unnecessary here since the fan is off globally.)
 
-**Manual-nav REST payload** is `{"action":"enable"}` / `{"action":"disable"}` (the `{"operation":...}` form returns HTTP 400 — the real cause of the earlier "rejected" results, not work_mode).
+**LiDAR gate is event-driven.** `fanoff_flag.sh` holds ONE Valetudo SSE stream (`GET /api/v2/robot/state/attributes/sse`) and reacts to pushed `StateAttributesUpdated` events — no polling / no `sleep`. It sets `/tmp/lidar_allow` for active statuses (cleaning/returning/moving/…) and removes it for manual_control/idle/docked/paused/error. Manual override: `touch /tmp/lidar_allow` to force the turret on; stop the daemon + leave the flag absent to keep it always off.
 
-**Deploy / persistence:**
+**Manual-nav REST payload** is `{"action":"enable"}` / `{"action":"disable"}` (the `{"operation":...}` form returns HTTP 400 — the real cause of earlier "rejected" results, not work_mode). Move: `{"action":"move","vector":{"velocity":0..1,"angle":N}}`.
+
+**Verified on the wire.** Manual nav → `SetCleaning` `00 01 00 00 00` (fan off) + ttyS3 LDS reads ~0 (turret parked) + `_CtrlMcuCMD 04 00`, with no fan/LiDAR start-up blip. With `/tmp/lidar_allow` present the LiDAR spins (~1700 reads/3s) while `SetCleaning` stays `00 01` — proving the fan is unconditional and the LiDAR is gated. MotorCtrl (driving) flows throughout; AVA healthy.
+
+**Deploy / persistence.**
 - `deploy_fanoff.sh` builds a patched `ava.sh` (`export LD_PRELOAD=/data/lib/libfanoff_filter.so`), bind-mounts it over `/etc/rc.d/ava.sh`, restarts AVA.
-- `_root.sh` re-establishes that bind-mount early at boot (before app start) so the filter persists across reboots.
-- Build with `build_fanoff.sh` (freestanding, glibc-2.23-safe). RE artifacts: `~/dreame-re/{mcu.bin,node_signal.so}`; protocol reference `~/dreame_mcu_protocol` (alufers).
+- `_root.sh` re-establishes that bind-mount early at boot; `_root_postboot.sh` launches the SSE gate daemon after Valetudo starts. Both persist across reboot.
+- Build with `build_fanoff.sh` (freestanding, glibc-2.23-safe). RE artifacts: `~/dreame-re/{mcu.bin,node_signal.so}`; protocol ref `~/dreame_mcu_protocol` (alufers).
 
-**Implementation kit** (`scripts/robot/`): `fanoff_shim.c` (filter), `build_fanoff.sh`, `deploy_fanoff.sh`, `capture_cleanset.sh`.
+**Implementation kit** (`scripts/robot/`): `fanoff_shim.c` (filter), `fanoff_flag.sh` (SSE LiDAR gate), `build_fanoff.sh`, `deploy_fanoff.sh`, `capture_cleanset.sh`.
 
-**Dead ends — do NOT retry** (none gate the fan in manual/remote mode): `clean_parameter.json` `CleanMode`, an `only_mop` heap patch, ptrace-patching `node_porphyrion.so`, or the `FanSpeedControlCapability` boot loop. This machinery has been removed from the boot path and the repo.
+**Dead ends — do NOT retry** (none gate the fan in manual/remote mode): `clean_parameter.json` `CleanMode`, an `only_mop` heap patch, ptrace-patching `node_porphyrion.so`, the `FanSpeedControlCapability` boot loop. Removed from the boot path and repo.
 
 ### Valetudo REST API capabilities
 
@@ -414,25 +417,57 @@ curl -X PUT http://192.168.1.213/api/v2/robot/capabilities/HighResolutionManualC
 
 `{"operation":...}` / top-level `velocity`/`angle` are WRONG and return HTTP 400. Enabling manual control spins the vacuum fan at the MCU — suppressed by the SetCleaning filter (see the Vacuum fan disable section).
 
-### MCU serial communication (ttyS4)
+### MCU & LDS serial protocol (reference)
 
-AVA talks to the MCU (wheels, vacuum fan, brushes, pump, IMU/sensor telemetry) over **`/dev/ttyS4`** (opened on a dynamic fd, observed as fd 24). `/dev/ttyS3` (fd 26) is held open but had **zero writes** in every capture — read-mostly (LiDAR). AVA only frames + CRCs the bytes; packet *content* is a separate layer (`node_signal.so` builds messages, `node_com.so` does framing). LiDAR is processed by `node_lib.lds`. Command socket: `/tmp/avacmd.socket`.
+Two independent serial links from the SoC (AVA):
+- **`/dev/ttyS4` — MCU** (motors: wheels, vacuum fan, brushes, pump; plus IMU/sensor telemetry). AVA opens it on a dynamic fd (observed fd 24). Per the alufers Z10 repo the MCU link is **115200**; D10s value not independently confirmed.
+- **`/dev/ttyS3` — LDS / LiDAR**, **230400**. AVA opens it (observed fd 26); read-mostly (the turret streams scans; AVA rarely writes). LDS frames are a *different* format — `55 aa` + 36 data bytes (38B) — which the old docs mislabeled as an "MCU 55 AA protocol".
 
-**Frame format** (matches `github.com/alufers/dreame_mcu_protocol`, cloned at `~/dreame_mcu_protocol`):
+RE'd from `github.com/alufers/dreame_mcu_protocol` (cloned `~/dreame_mcu_protocol`; written for the Z10 Pro — same protocol family as the D10s; framing/CRC/SetCleaning/_CtrlMcuCMD all re-verified on our D10s). Firmware dumped at `~/dreame-re/mcu.bin` (GD32F303-class MCU, FreeRTOS) — import to Ghidra as Raw Binary, ARM Cortex LE, base `0x08000000`. AVA-side node that builds messages: `~/dreame-re/node_signal.so`.
+
+**MCU frame format** (ttyS4):
 ```
 3c <len> <type> <payload[len]> <crc_hi> <crc_lo> 3e
 ```
-- `3c`/`3e` = start/end; `3f` = escape (a literal `3c`/`3e`/`3f` in the body is preceded by `3f`).
-- `crc` = **Modbus CRC16** over `len+type+payload`, big-endian (verified — reproduces every captured frame; table ported into `fanoff_shim.c`).
+- `3c`='<' start, `3e`='>' end, `3f`='?' escape (a literal `3c`/`3e`/`3f` in the body is prefixed with `3f`).
+- `crc` = **Modbus CRC16** over the unescaped `[len, type, payload]`, stored big-endian (repo `crc_util.py`; ported into `fanoff_shim.c`; reproduces every captured frame). The MCU occasionally emits corrupt frames not starting with `3c` — resync on the delimiters.
 
-**SoC→MCU packet types we rely on:**
+**SoC→MCU packets** (repo `TYPES_TO_MCU`; ✓ = re-verified on our D10s):
 | type | name | payload | notes |
 |------|------|---------|-------|
-| 0x00 | MotorCtrl | flag + 2×float32 | wheel linear/rotational velocity (driving) — `3c 09 00 …` |
-| 0x01 | SetCleaning | f1 f2 f3 f4 f5 | **f3 = vacuum fan level** (low/med=3, max=5, off=0); f1/f2 = brush/pump — `3c 05 01 …` |
-| 0x02 | SetButtonLEDState | 1 byte | LED state; doubles as a heartbeat |
+| 0x00 | MotorCtrl ✓ | flag:u8, linear:f32, rot:f32 | wheel velocities (driving) — `3c 09 00 …`; all-zero when stationary |
+| 0x01 | SetCleaning ✓ | f1..f5:u8 | fan/brush/pump. **f3=vacuum fan level** (low/med=3,max=5,off=0); f1/f2 base power; idle=`00 01 00 00 00` |
+| 0x02 | SetButtonLEDState | state:u8 | LED state; doubles as heartbeat |
+| 0x04 | SetOdometer | op:u8 + 3×u32 + u8 | |
+| 0x11 | SetLDSCalibration | x,y,angle:f32 | (calib JSON carried via msg 0x10) |
+| 0x14 | _CtrlMcuCMD ✓ | subcmd:u8, value:u8 | MCU signal control. **subcmd 0x04 = LDS turret motor** (1=spin/0=park); other subcmds drive IR/cliff switches (`RobotIRSwitch`) |
+| 0x1d | LaserOrTofControl | reset_trans:u8, value:u8 | 6=laser reset, 1=tof reset, 4=camera-stereo reset |
+| 0x1f | CalibrateIMU | op:u8 | 1=start, 5=query (replies 0x11) |
+| 0x0f | Pong | u32 | latency reply to MCU Ping |
 
-MCU→SoC status packets (odometry, IMU, battery, triggers, …) are in the repo's `mcu_packets.py`. Firmware dumped to `~/dreame-re/mcu.bin` for Ghidra. To modify the stream, interpose via `LD_PRELOAD` on AVA — do not open the serial directly (conflicts with AVA).
+**MCU→SoC packets** (repo `TYPES_FROM_MCU`):
+| type | name | notes |
+|------|------|-------|
+| 0x00 | Triggers | bumpers, cliff/IR, dock; per-motor over-current + error bits (fan_error, lidar_error, …) — handy for diagnostics |
+| 0x01 | Status20ms | odometry x/y/yaw, wheel vel, roller+sidebrush current (length differs D10s vs Z10) |
+| 0x02 | Status10ms | IMU gyro/accel + wheel distances |
+| 0x03 | Status100ms | pitch/roll, wheel current, dust/water/hepa/carpet bits |
+| 0x05 | Status500ms | RTC timestamp |
+| 0x07 | McuFwVersionInfo | git hash + version |
+| 0x0b | lidar | 1=start lidar calibrate/spinup, 2=stop |
+| 0x0f | PingMsg | latency probe (reply Pong 0x0f) |
+| 0x27 | McuLog | 12B; AVA saves to /data/log/mculog.bin |
+| 0x29 | HwInfo | MCU/IMU/charger/app type ids |
+| 0x2b | BatteryStatus | voltage, current, temp, charge, SoC% |
+
+**AVA node architecture** (one `.so` per node in `/ava/lib/`, nanomsg IPC):
+- `node_com.so` — link layer: serial connect + framing + CRC only (no packet semantics).
+- `node_signal.so` — "HAL": builds/parses MCU message *contents* (`AvaNodeSignal::CleanSetProcess`→SetCleaning, `MoveControlProcess`→MotorCtrl); also maps raw LDS data upward.
+- `node_lds.so` — low-level LDS serial.
+- `node_cmd.so` — serves `avacmd` on `/tmp/avacmd.socket`.
+- `liberos_tactics_tree.so` — the behavior tree (BehaviorTree.CPP): `RobotMcuSignalCtrl{RobotIRSwitch(Cliff/Front), LDS_Switch}`, `ChangeRobotModeTo{…Remote, Auto, BackHome, FastMapBuild…}`, escape/warning nodes, etc.
+
+To modify the stream, interpose via `LD_PRELOAD` on AVA (see "Vacuum fan + LiDAR quieting") — do not open the serial directly (conflicts with AVA).
 
 ### avaexec socket
 
@@ -499,7 +534,8 @@ scripts/
     camera_stream.sh       run in robot chroot to stream /dev/video0
     audio_server.py        run in robot chroot to serve audio playback
     dreame-wifi-setup.sh   e2e script: connect AP → deploy → reconnect 5K
-    fanoff_shim.c          LD_PRELOAD shim: rewrites MCU SetCleaning fan byte (f3) → 0 (freestanding)
+    fanoff_shim.c          LD_PRELOAD shim: fan off always + LiDAR off when blocked (freestanding)
+    fanoff_flag.sh         event-driven (Valetudo SSE) LiDAR gate: /tmp/lidar_allow in non-manual modes
     build_fanoff.sh        compile shim in chroot (log + filter .so), glibc-2.23-safe
     capture_cleanset.sh    capture MCU 3c..3e frames across fan states
     deploy_fanoff.sh       bind-mount patched ava.sh exporting LD_PRELOAD, restart + verify
