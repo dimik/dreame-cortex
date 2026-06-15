@@ -584,6 +584,26 @@ AVA communicates with the MCU (motor controller) via `/dev/ttyS3` at 230400 baud
 > - **`fanoff_shim.c` `MAGIC`/`CLEANSET_CMD`/`FAN_OFFSET`/`cksum` are all still placeholders**
 >   and must be rebuilt around the `3c…3e` protocol once the fan frame is captured.
 
+#### Session progress 2026-06-15 (eve) — RESUME HERE
+
+Captured AVA serial writes (strace) across idle / fan-on-stationary / driving. Key results:
+- **fd 26 / ttyS3: ZERO writes in every state** — the documented "CLEANSET on ttyS3" is dead.
+- fd 24 / ttyS4 steady cycle (~2s): `3c 02 14 04 00 58 43 3e` · `3c 01 02 02 a1 a0 3e` · `3c 05 01 00 01 00 00 00 2d 4e 3e`.
+- `3c 09 …` = wheel/motion (LE-float velocities while driving, all-zero when still).
+- `3c 04 0f …` = periodic status w/ rising timestamp byte.
+- **CRITICAL:** fan-ON-but-stationary (`fan_speed=max`) is byte-for-byte ≈ idle-docked → there is **no continuous fan-power byte** in AVA's serial output.
+- During driving, `3c 02 14 04` byte5 flips `00→01` = a MOVING flag (not fan).
+
+**Open question to resolve first:** is the fan command (a) a **one-shot at the on/off transition** (→ filterable by the shim), or (b) **MCU-autonomous** — the MCU spins the fan itself on a clean/move-mode command and AVA never emits fan power (→ LD_PRELOAD fan-byte filter is **infeasible**; pivot to filtering the mode/clean command, or hardware fan disconnect).
+
+**Blocker:** tight-timed transition captures missed the toggle 3×. Note: manual-control REST `enable` returns **HTTP 400 while docked** (work_mode 14); the user triggers fan-on via the normal Valetudo manual-nav flow.
+
+**Next step (staged & ready):** `/tmp/cap6.sh` on the robot = 35s strace, time-ordered non-noise fd24+fd26. Run it in the background, have the user **toggle manual-nav ON/OFF 2–3 times (stationary)** during the window. Find a frame that **breaks the steady ~2s cycle** near each toggle:
+- one-shot frame exists → that's the fan/clean command. Decode the fan byte + solve the CRC16 params from the many frame+trailer pairs already captured, then rework the `3c…3e` constants in `fanoff_shim.c` and build `MODE_FILTER`.
+- nothing distinct appears → case (b); abandon the serial filter, go hardware / mode-command route.
+
+**Loose ends:** in-memory `patch_cleanmode.py` still active in AVA pid 1543 (harmless, clears on reboot). `fan_speed` left at `max` preset from capture (irrelevant docked; boot resets it).
+
 **MCU pub/sub message types** (internal to AVA, not directly accessible externally):
 - `CLEANSET` — sets motor speeds (fan, brush, pump)
 - `MOVE_CTRL` — sets wheel velocity
