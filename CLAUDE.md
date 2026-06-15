@@ -368,7 +368,9 @@ Note: `CleanMode` (`WritePropInt type=0`) is a property-store/behavior-tree valu
 - `_root.sh` re-establishes that bind-mount early at boot; `_root_postboot.sh` launches the SSE gate daemon after Valetudo starts. Both persist across reboot.
 - Build with `build_fanoff.sh` (freestanding, glibc-2.23-safe). RE artifacts: `~/dreame-re/{mcu.bin,node_signal.so}`; protocol ref `~/dreame_mcu_protocol` (alufers).
 
-**Implementation kit** (`scripts/robot/`): `fanoff_shim.c` (filter), `fanoff_flag.sh` (SSE LiDAR gate), `build_fanoff.sh`, `deploy_fanoff.sh`, `capture_cleanset.sh`.
+**Architecture (table-driven).** `fanoff_shim.c` is layered: raw syscalls → Modbus CRC16 → frame codec (3c..3e + `?` escaping) → **policy `RULES[]` table** → write/writev hooks. Each subsystem is ONE declarative rule — match `type` (+ optional first payload byte), a rewrite `action` (`REWRITE_SETCLEANING_IDLE` / `REWRITE_ZERO_BYTE`), and a `gate` (`GATE_ALWAYS` or `GATE_UNLESS_FLAG <path>`). To disable another subsystem later, add a rule — nothing else changes. (Do NOT gate the IMU — AVA needs it to drive.) The const table relocates correctly under the `-nostdlib` build (verified: AVA loads + runs).
+
+**Implementation kit** (`scripts/robot/`): `fanoff_shim.c` (table-driven filter), `fanoff_flag.sh` (SSE LiDAR gate), `build_fanoff.sh`, `deploy_fanoff.sh`, `capture_cleanset.sh`.
 
 **Dead ends — do NOT retry** (none gate the fan in manual/remote mode): `clean_parameter.json` `CleanMode`, an `only_mop` heap patch, ptrace-patching `node_porphyrion.so`, the `FanSpeedControlCapability` boot loop. Removed from the boot path and repo.
 
