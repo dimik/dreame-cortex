@@ -109,10 +109,29 @@ Valetudo never implemented video and can't without re-brokering Agora.
 
 **Only true LOCAL video path:** our own pipeline — camera → `/dev/cedar_dev` HW H.264 → local RTSP/UDP. The
 libs (`libvencoder`, `libawh264`, `libsunxicamera`) and the encoder device are present. Blocker: the single
-OV8856 is AVA-held (`/dev/video2`); freeing it (e.g. LD_PRELOAD-intercepting AVA's camera `open`) breaks
-AVA's obstacle AI and risks crash/reboot loops. **Recommendation: dedicated Q6A camera** for the rover's
-real-time video; the robot's camera stays with AVA. The own-`cedar`-pipeline (sensor wrested from AVA) is
-the only robot-camera local option — high effort, real risk.
+OV8856 is AVA-held (`/dev/video2`). Reconfiguring the pipeline while AVA streams **deadlocks the kernel**
+(uninterruptible D-state, needs reboot) — verified. So *taking* the camera is not viable. **But we don't need to take it — see below.**
+
+### ✅ WORKING: read-only frame siphon (`camsiphon.so`)
+AVA continuously dequeues raw frames from `/dev/video2` (V4L2 mmap streaming, multi-plane, ~14 fps) for its
+obstacle AI — even while docked. `scripts/robot/camsiphon.c` is a freestanding LD_PRELOAD lib (loaded into
+AVA alongside `libfanoff_filter.so`) that hooks `open`/`openat`/`mmap`/`ioctl` and, on each `VIDIOC_DQBUF`,
+**copies out the frame AVA just captured** — purely read-only (it calls the real syscalls and only *reads*
+AVA's buffer). **AVA is completely unaffected** (verified: Valetudo 200, capturing normally; no crash/deadlock).
+
+- Format discovered from AVA's `S_FMT`: **NV21, 672×504** (`/tmp/cam_fmt.txt`).
+- On-demand grab: `touch /tmp/cam_grab` → next frame written to `/tmp/cam_frame.raw` (516096-byte buffer;
+  NV21 payload 508032). Pull + convert (see `~/dreame-camera/`, NV21→PPM/PNG works).
+- Loaded via the same `ava.sh` `LD_PRELOAD` bind-mount: `LD_PRELOAD="…/libfanoff_filter.so …/libcamsiphon.so"`.
+- **Verified 2026-06-16**: produced a correct, current color frame of the room, zero AVA disruption.
+
+**This is the recommended way to get the robot's camera locally** — no cloud, no ISP fight, no risk. For a
+continuous stream/recording, extend camsiphon to a streaming mode (write frames to a fifo/socket) feeding a
+chroot-side encoder (cedar/`x264`/`ffmpeg`) → RTSP/MP4. A **dedicated Q6A camera** is still the better choice
+for high-rate/high-res rover vision, but the onboard feed is now extractable safely.
+
+(Earlier "the onboard camera can't be tapped safely" conclusion is SUPERSEDED by camsiphon — the read-only
+DQBUF tap is the safe path; the cloud/Agora live-feed and the ISP-seizure routes remain dead ends.)
 
 `scripts/robot/camera_stream.sh` (GStreamer off `/dev/video0`) and `scripts/robot/v4l2grab.c` remain
 for if we ever set up an independent `/dev/video0` pipeline (`media-ctl` + `v4l-utils`/`gst`, sensor
