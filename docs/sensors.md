@@ -61,11 +61,28 @@ ssh dreame-home 'base64 /data/ai_offline_collection/<file>.jpg' | base64 -d > fr
 ```
 Sample frames pulled to `~/dreame-camera/` show the robot's low, wide-FOV view of the room.
 
-### Live stream (future)
-`node_camera_streamer.so` is loaded — AVA has a camera streamer. For the rover, the planned path
-is `scripts/robot/camera_stream.sh` (GStreamer off `/dev/video0`) — **but `gst`/`ffmpeg`/`v4l2-ctl`
-are not installed** on host or chroot, and `/dev/video0` needs the pipeline set up first. So a live
-stream is not yet wired; the AI JPEG dumps are the current frame source.
+### Live camera control — `avacmd streamer` (works, but FRAGILE — caused a reboot)
+AVA's camera streamer (`node_camera_streamer.so`) is reachable on the avacmd socket as node
+**`streamer`**:
+- `avacmd streamer '{"cmd":"get_camera_state"}'` → `{"state":"open"}` (camera is open whenever AVA runs). **Read-only, safe.**
+- Commands: `open_camera`, `close_camera`, `get_camera_state`. Params: `width`, `height`, `fps_in`,
+  `fps_out`, `enable_photo_thread`, `enable_sync`. With `enable_photo_thread` it is meant to save
+  JPG/BMP/YUV to `/data/www/data/camera_bmp/camera_*_width=W_heig=H.*`.
+- Frame transport: `/tmp/videomonitor.socket` (the app's live-view feed).
+- **⚠️ DO NOT reconfigure the live camera.** Sending `open_camera` with width/height/fps on the
+  running system **crashed AVA and forced a full reboot (2026-06-16)** — and `enable_photo_thread`
+  never produced files while idle (frames only flow when AVA is actively pulling them during
+  navigation). AVA owns the single sensor and won't tolerate external reconfiguration.
+
+**Safe ways to get camera frames:**
+1. **AI JPEG dumps** (above) — read-only, real frames, populate during navigation. Best zero-risk option.
+2. **Passive read** of `/tmp/videomonitor.socket` (connect & read only, never `open_camera`) — untested; may be empty while idle.
+3. **Dedicated camera on the Q6A** (it has 3× MIPI CSI) — *recommended for the rover*: full control, no
+   contention with AVA, better placement. The robot's OV8856 stays with AVA for its obstacle avoidance.
+
+`scripts/robot/camera_stream.sh` (GStreamer off `/dev/video0`) and `scripts/robot/v4l2grab.c` remain
+for if we ever set up an independent `/dev/video0` pipeline (`media-ctl` + `v4l-utils`/`gst`, sensor
+freed) — but that contends with AVA for the sensor and risks the same instability.
 
 ---
 
