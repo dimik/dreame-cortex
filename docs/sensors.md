@@ -61,33 +61,37 @@ ssh dreame-home 'base64 /data/ai_offline_collection/<file>.jpg' | base64 -d > fr
 ```
 Sample frames pulled to `~/dreame-camera/` show the robot's low, wide-FOV view of the room.
 
-### Live camera control — `avacmd streamer` (works, but FRAGILE — caused a reboot)
-AVA's camera streamer (`node_camera_streamer.so`) is reachable on the avacmd socket as node
-**`streamer`**:
-- `avacmd streamer '{"cmd":"get_camera_state"}'` → `{"state":"open"}` (camera is open whenever AVA runs). **Read-only, safe.**
-- Commands: `open_camera`, `close_camera`, `get_camera_state`. Params: `width`, `height`, `fps_in`,
-  `fps_out`, `enable_photo_thread`, `enable_sync`. With `enable_photo_thread` it is meant to save
-  JPG/BMP/YUV to `/data/www/data/camera_bmp/camera_*_width=W_heig=H.*`.
-- Frame transport: `/tmp/videomonitor.socket` (the app's live-view feed).
-- **⚠️ DO NOT reconfigure the live camera.** Sending `open_camera` with width/height/fps on the
-  running system **crashed AVA and forced a full reboot (2026-06-16)** — and `enable_photo_thread`
-  never produced files while idle (frames only flow when AVA is actively pulling them during
-  navigation). AVA owns the single sensor and won't tolerate external reconfiguration.
+### Live camera control — reverse-engineered (and why it's a dead end for us)
+AVA's camera streamer (`node_camera_streamer.so`) contains two roles: `AvaNodeCameraStreamer`
+(avacmd node **`streamer`**) and `RealyVideoMonitor` (the cloud video-monitor relay).
 
-**Safe ways to get camera frames:**
-1. **AI JPEG dumps** (above) — read-only, real frames, populate during navigation. Best zero-risk option.
-2. **Passive read** of `/tmp/videomonitor.socket` — **TESTED, dead end.** On connect the socket
-   emits only an 8-byte handshake header (`00 53 50 00 00 10 00 00`) and then nothing — no frames,
-   even while the robot is in manual nav. AVA only streams frames after an explicit start request,
-   which goes through the same reconfiguration path that crashed/rebooted the robot. So there is no
-   safe passive live feed. (`scripts/robot/vmread.c` = the read-only socket probe used here.)
-3. **Dedicated camera on the Q6A** (it has 3× MIPI CSI) — *recommended for the rover*: full control, no
-   contention with AVA, better placement. The robot's OV8856 stays with AVA for its obstacle avoidance.
+- **`avacmd streamer` control — SAFE.** `avacmd streamer '{"cmd":"get_camera_state"}'` → `{"state":"open"}`.
+  Commands `open_camera`/`close_camera`/`get_camera_state`; params `width`/`height`/`fps_in`/`fps_out`/
+  `enable_photo_thread`/`enable_sync`. **Verified stable** — `open_camera` (even with new width/height/fps)
+  ran with AVA staying up 30 s+, same PID, Valetudo 200. (An earlier reboot I'd blamed on this was
+  *coincidental* — it does NOT crash AVA.) But `enable_photo_thread` produced **no files while idle**:
+  frames only flow when AVA is actively pulling them (navigation), same as the AI dumps.
 
-**Conclusion:** the robot's onboard OV8856 cannot safely provide a live feed to us — it's AVA-owned
-and crashes when externally driven, and the frame socket stays silent without the crash-prone trigger.
-Use the **read-only AI JPEG dumps** for occasional robot-camera frames (during navigation), and a
-**dedicated Q6A camera** for the rover's real-time vision.
+- **`/tmp/videomonitor.socket` is a nanomsg PAIR (`ipc://`) endpoint** — the 8-byte blob is the nanomsg
+  **SP greeting** (`\0SP\0` + protocol `0x0010`=PAIR + reserved), not a frame header. A raw reader gets
+  stuck because it must send its own greeting back. With a proper greeting the handshake completes —
+  but AVA then sends nothing unprompted (`RealyVideoMonitor` is a *relay*, it waits for commands).
+- **⚠️ Sending a JSON command into that socket CRASHED AVA** (2026-06-16): a single
+  `{"method":"takephoto"}` over the PAIR socket made AVA close the connection and the `ava` process
+  died (watchdog restarted it ~24 s later; **no system reboot**, and the fanoff shim auto-reloaded via
+  the `ava.sh` bind-mount). So the relay socket is **not** safely pokeable.
+- **It's a cloud feature anyway.** The node uses **Agora RTC** for live video and uploads photos to
+  `https://aiphotos.dreame.tech` / an OSS URL (`VM_UploadPhotoToServer`, `CAMERA_PQKL_IMG_UPLOAD`).
+  Command vocab: `method`/`action`/`type`/`start`/`end`/`takephoto`/`monitor`/`open`/`upload`. The live
+  feed is designed for cloud video-calls + cloud photo upload — **not a local raw stream**.
+
+**Conclusion:** the onboard OV8856 cannot safely provide a local live feed. `avacmd streamer` is safe but
+yields no idle frames; the videomonitor relay is cloud/Agora-oriented and crashes AVA when poked. **Use:**
+1. **AI JPEG dumps** (`/data/ai_offline_collection`, read-only) — real frames during navigation. Zero risk.
+2. **Dedicated camera on the Q6A** (3× MIPI CSI) — *the recommended path* for the rover's real-time vision;
+   the robot's OV8856 stays with AVA for obstacle avoidance.
+
+(`scripts/robot/vmread.c` = nanomsg-PAIR socket probe used for this RE.)
 
 `scripts/robot/camera_stream.sh` (GStreamer off `/dev/video0`) and `scripts/robot/v4l2grab.c` remain
 for if we ever set up an independent `/dev/video0` pipeline (`media-ctl` + `v4l-utils`/`gst`, sensor
