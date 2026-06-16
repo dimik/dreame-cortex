@@ -16,7 +16,7 @@ Turn a Dreame D10s Pro robot vacuum into an open AI platform:
 - SoC: AllWinner MR813, quad-core Cortex-A7 @ 1.2GHz, aarch64
 - WiFi: Realtek 8189fs — **2.4GHz only, single radio** (cannot do AP + STA on different channels simultaneously)
 - LiDAR: on `/dev/ttyS4` — read exclusively by AVA, proprietary binary protocol
-- Camera: OV8856 MIPI sensor, exposed as `/dev/video0` and `/dev/video2` via V4L2
+- Camera: OV8856 MIPI sensor (`/dev/video0`,`/dev/video2`, multi-plane sunxi-vin). AVA owns it; live frames are siphoned read-only via `camsiphon.so` — see `docs/sensors.md`.
 - Speaker: SUNXI-CODEC ALSA device — `hw:0,0`, playback via `aplay`
 - Root filesystem: **squashfs (physically read-only)** — cannot be remounted RW
 - Writable partition: `/data/` (ext4, ~3.3GB total, ~2GB free after setup)
@@ -109,8 +109,8 @@ Valetudo REST (port 80)  ◄────────── REST ─────�
 Valetudo MQTT (port 1883) ──── MQTT ──────────►  valetudo_bridge node
                                                     └─► /scan /odom /map
 
-/dev/video0 ──► camera_stream.sh ─── UDP/H.264 ──► camera_node
-                                                    └─► /camera/image_raw
+AVA /dev/video2 ──► camsiphon.so (LD_PRELOAD, read-only DQBUF tap) ──► NV21 frames ──► (encode) ──► camera_node
+   (the robot's OV8856 is AVA-owned; we siphon the raw frames AVA already captures — see docs/sensors.md)
 
 /dev/snd (ALSA) ◄──────────────── TCP socket ───── audio_server.py
 audio_server.py (port 9999)                          └─ TTS WAV data
@@ -553,13 +553,17 @@ scripts/
     _root.sh               deploy to /data/_root.sh on robot (CONTAINS WIFI CREDENTIALS)
     _root_postboot.sh      deploy to /data/_root_postboot.sh on robot
     chroot.sh              deploy to /data/chroot.sh on robot
-    camera_stream.sh       GStreamer stream of /dev/video0 (NOTE: gst not installed; video0 needs pipeline setup)
-    v4l2grab.c             multi-plane V4L2 frame grabber -> PPM (for /dev/video0 once pipeline is wired)
+    camsiphon.c            LD_PRELOAD camera siphon: copies AVA's live NV21 frames at VIDIOC_DQBUF (read-only) ✅
+    cam_grab.sh            robot-side: touch /tmp/cam_grab -> camsiphon writes /tmp/cam_frame.raw (NV21)
+    nv21_to_png.py         workstation: convert a siphoned NV21 frame -> PNG (PIL)
+    camera_stream.sh       (unused) GStreamer stub — gst not installed; video0 deadlocks while AVA streams
+    v4l2grab.c             multi-plane V4L2 grabber -> PPM (dead end: video0 reconfigure deadlocks the ISP)
+    vmread.c               nanomsg-PAIR probe for /tmp/videomonitor.socket (RE of the cloud video relay)
     audio_server.py        run in robot chroot to serve audio playback
     dreame-wifi-setup.sh   e2e script: connect AP → deploy → reconnect 5K
     fanoff_shim.c          LD_PRELOAD shim: fan off always + LiDAR off when blocked (freestanding)
     fanoff_flag.sh         event-driven (Valetudo SSE) LiDAR gate: /tmp/lidar_allow in non-manual modes
-    build_fanoff.sh        compile shim in chroot (log + filter .so), glibc-2.23-safe
+    build_fanoff.sh        compile fanoff + camsiphon .so in chroot, glibc-2.23-safe
     capture_cleanset.sh    capture MCU 3c..3e frames across fan states
     deploy_fanoff.sh       bind-mount patched ava.sh exporting LD_PRELOAD, restart + verify
   companion/

@@ -12,13 +12,16 @@ echo "=== _root.sh start $(date) ==="
 # Must be established before app start runs /etc/rc.d/ava.sh (this is the early hook).
 FANOFF=/data/lib/libfanoff_filter.so
 if [ -f "$FANOFF" ]; then
+    # Preload the fanoff filter, and camsiphon (read-only camera frame siphon) if present.
+    PRELOAD="$FANOFF"
+    [ -f /data/lib/libcamsiphon.so ] && PRELOAD="$FANOFF /data/lib/libcamsiphon.so"
     head -1 /etc/rc.d/ava.sh > /data/ava.sh.preload
-    echo "export LD_PRELOAD=$FANOFF" >> /data/ava.sh.preload
+    echo "export LD_PRELOAD=\"$PRELOAD\"" >> /data/ava.sh.preload
     tail -n +2 /etc/rc.d/ava.sh >> /data/ava.sh.preload
     chmod +x /data/ava.sh.preload
     mount --bind /data/ava.sh.preload /etc/rc.d/ava.sh
-    echo "fanoff: LD_PRELOAD shim bind-mounted onto ava.sh"
-    logger -t root_sh "fanoff shim preload bind-mounted"
+    echo "LD_PRELOAD shim(s) bind-mounted onto ava.sh: $PRELOAD"
+    logger -t root_sh "ava preload bind-mounted: $PRELOAD"
 fi
 
 # Prevent miio_client from entering WiFi AP (provisioning) mode on every boot.

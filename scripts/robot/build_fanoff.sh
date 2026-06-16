@@ -40,3 +40,16 @@ echo "--- version deps (should be EMPTY) ---"
 chroot "$CHROOT" /usr/bin/readelf -V /tmp/libfanoff_filter.so 2>/dev/null | grep -i "GLIBC" || echo "  none — good (freestanding)"
 echo "--- exported symbols (expect: write, writev) ---"
 chroot "$CHROOT" /usr/bin/readelf -s /tmp/libfanoff_filter.so 2>/dev/null | grep -iE " write$| writev$" || true
+
+# --- camsiphon: read-only camera frame siphon (separate LD_PRELOAD lib) ---
+if [ -f /data/camsiphon.c ]; then
+    echo "Building libcamsiphon.so (camera frame siphon)..."
+    cp /data/camsiphon.c "$CHROOT/tmp/camsiphon.c"
+    chroot "$CHROOT" /usr/bin/gcc-13 $CFLAGS -o /tmp/libcamsiphon.so /tmp/camsiphon.c
+    cp "$CHROOT/tmp/libcamsiphon.so" "$OUTDIR/libcamsiphon.so"
+    ls -la "$OUTDIR/libcamsiphon.so"
+    echo "--- camsiphon version deps (should be EMPTY) ---"
+    chroot "$CHROOT" /usr/bin/readelf -V /tmp/libcamsiphon.so 2>/dev/null | grep -i "GLIBC" || echo "  none — good (freestanding)"
+    echo "--- camsiphon exports (expect: open, openat, mmap, ioctl) ---"
+    chroot "$CHROOT" /usr/bin/readelf --dyn-syms /tmp/libcamsiphon.so 2>/dev/null | grep -iE " (open|openat|mmap|ioctl)$" || true
+fi
