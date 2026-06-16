@@ -76,9 +76,18 @@ AVA's camera streamer (`node_camera_streamer.so`) is reachable on the avacmd soc
 
 **Safe ways to get camera frames:**
 1. **AI JPEG dumps** (above) — read-only, real frames, populate during navigation. Best zero-risk option.
-2. **Passive read** of `/tmp/videomonitor.socket` (connect & read only, never `open_camera`) — untested; may be empty while idle.
+2. **Passive read** of `/tmp/videomonitor.socket` — **TESTED, dead end.** On connect the socket
+   emits only an 8-byte handshake header (`00 53 50 00 00 10 00 00`) and then nothing — no frames,
+   even while the robot is in manual nav. AVA only streams frames after an explicit start request,
+   which goes through the same reconfiguration path that crashed/rebooted the robot. So there is no
+   safe passive live feed. (`scripts/robot/vmread.c` = the read-only socket probe used here.)
 3. **Dedicated camera on the Q6A** (it has 3× MIPI CSI) — *recommended for the rover*: full control, no
    contention with AVA, better placement. The robot's OV8856 stays with AVA for its obstacle avoidance.
+
+**Conclusion:** the robot's onboard OV8856 cannot safely provide a live feed to us — it's AVA-owned
+and crashes when externally driven, and the frame socket stays silent without the crash-prone trigger.
+Use the **read-only AI JPEG dumps** for occasional robot-camera frames (during navigation), and a
+**dedicated Q6A camera** for the rover's real-time vision.
 
 `scripts/robot/camera_stream.sh` (GStreamer off `/dev/video0`) and `scripts/robot/v4l2grab.c` remain
 for if we ever set up an independent `/dev/video0` pipeline (`media-ctl` + `v4l-utils`/`gst`, sensor
