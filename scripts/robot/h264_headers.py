@@ -64,32 +64,34 @@ def sps(W, H, profile, log2_maxfn_m4, poc_type, poc_lsb_m4, level=30):
     b.u(1, 0)                  # vui_parameters_present_flag
     return b"\x00\x00\x00\x01\x67" + emulation_prevent(b.rbsp())
 
-def pps():
+def pps(entropy=0, deblock=0):
     b = BW()
-    b.ue(0)        # pic_parameter_set_id
-    b.ue(0)        # seq_parameter_set_id
-    b.u(1, 0)      # entropy_coding_mode_flag (CAVLC)
-    b.u(1, 0)      # bottom_field_pic_order_in_frame_present
-    b.ue(0)        # num_slice_groups_minus1
-    b.ue(0)        # num_ref_idx_l0_default_active_minus1
-    b.ue(0)        # num_ref_idx_l1_default_active_minus1
-    b.u(1, 0)      # weighted_pred_flag
-    b.u(2, 0)      # weighted_bipred_idc
-    b.se(0)        # pic_init_qp_minus26
-    b.se(0)        # pic_init_qs_minus26
-    b.se(0)        # chroma_qp_index_offset
-    b.u(1, 0)      # deblocking_filter_control_present
-    b.u(1, 0)      # constrained_intra_pred_flag
-    b.u(1, 0)      # redundant_pic_cnt_present
+    b.ue(0)            # pic_parameter_set_id
+    b.ue(0)            # seq_parameter_set_id
+    b.u(1, entropy)    # entropy_coding_mode_flag (0=CAVLC 1=CABAC)
+    b.u(1, 0)          # bottom_field_pic_order_in_frame_present
+    b.ue(0)            # num_slice_groups_minus1
+    b.ue(0)            # num_ref_idx_l0_default_active_minus1
+    b.ue(0)            # num_ref_idx_l1_default_active_minus1
+    b.u(1, 0)          # weighted_pred_flag
+    b.u(2, 0)          # weighted_bipred_idc
+    b.se(0)            # pic_init_qp_minus26
+    b.se(0)            # pic_init_qs_minus26
+    b.se(0)            # chroma_qp_index_offset
+    b.u(1, deblock)    # deblocking_filter_control_present
+    b.u(1, 0)          # constrained_intra_pred_flag
+    b.u(1, 0)          # redundant_pic_cnt_present
     return b"\x00\x00\x00\x01\x68" + emulation_prevent(b.rbsp())
 
 def main():
-    idr, out, W, H, prof, l2, poc, plsb = (sys.argv[1], sys.argv[2],
-        int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]),
-        int(sys.argv[6]), int(sys.argv[7]), int(sys.argv[8]))
+    a = sys.argv
+    idr, out, W, H, prof, l2, poc, plsb = (a[1], a[2], int(a[3]), int(a[4]),
+        int(a[5]), int(a[6]), int(a[7]), int(a[8]))
+    entropy = int(a[9])  if len(a) > 9  else 0
+    deblock = int(a[10]) if len(a) > 10 else 0
     slice_ = open(idr, "rb").read()
     with open(out, "wb") as f:
-        f.write(sps(W, H, prof, l2, poc, plsb)); f.write(pps()); f.write(slice_)
+        f.write(sps(W, H, prof, l2, poc, plsb)); f.write(pps(entropy, deblock)); f.write(slice_)
 
 if __name__ == "__main__":
     main()

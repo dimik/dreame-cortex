@@ -144,6 +144,22 @@ int main(int argc, char** argv) {
     cfg.memops = MemAdapterGetOpsS();            /* veOpsS left NULL — lib inits VE itself */
     LOG("memops=%p eInputFormat=%d", cfg.memops, pixfmt);
 
+    /* experiment: set VENC_IndexParamH264Param (profile/level) before init to unblock SPS gen.
+     * H264IDX=<hex index>  H264PROF=<profile>  env vars. Struct: [profile,level,fps,bitrate,...]. */
+    char *gi = getenv("H264IDX");
+    if (codec == 0 && gi) {
+        int idx = (int)strtol(gi, 0, 0);
+        int prof = getenv("H264PROF") ? atoi(getenv("H264PROF")) : 77;
+        /* 0x106 handler reads only arg[0],arg[4],arg[8] -> ctx[1552/1556/1560] */
+        unsigned char hp[256]; memset(hp, 0, sizeof(hp));
+        *(int*)(hp+0)=prof;
+        *(int*)(hp+4)= getenv("H264F4") ? atoi(getenv("H264F4")) : 0;
+        *(int*)(hp+8)= getenv("H264F8") ? atoi(getenv("H264F8")) : 0;
+        int sr = VideoEncSetParameter(enc, (VENC_INDEXTYPE)idx, hp);
+        LOG("SetParameter(idx=0x%x, [0]=%d [4]=%d [8]=%d) -> %d", idx, prof,
+            *(int*)(hp+4), *(int*)(hp+8), sr);
+    }
+
     int r = VideoEncInit(enc, &cfg);
     LOG("VideoEncInit -> %d", r);
     if (r != 0) return 1;
