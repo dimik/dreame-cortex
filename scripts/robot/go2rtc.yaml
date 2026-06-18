@@ -1,0 +1,22 @@
+# go2rtc config — on-robot H.264/RTSP/WebRTC restream of the cedar MJPEG feed.
+# Runs in the Ubuntu chroot. Pulls the client-gated MJPEG from camstream (localhost:8090) ONLY
+# when a downstream viewer connects, transcodes MJPEG -> H.264 with static ffmpeg (libx264), and
+# fans out to many clients over RTSP / WebRTC / HLS. The on-demand pull chains the client-gating:
+# no go2rtc viewer -> no MJPEG pull -> camsiphon ring stays off -> zero AVA overhead.
+#
+#   RTSP:   rtsp://<robot-ip>:8554/dreame
+#   WebRTC: http://<robot-ip>:1984/  (browser, low latency, multi-viewer)
+log:
+  level: info
+api:
+  listen: ":1984"      # WebUI + WebRTC signaling + REST API
+rtsp:
+  listen: ":8554"
+ffmpeg:
+  bin: /opt/ffmpeg     # static ffmpeg (libx264) staged in the chroot
+streams:
+  # transcode the multipart-MJPEG HTTP feed to H.264 (SOFTWARE libx264 — no HW H.264 on this
+  # robot: cedar encoder is locked, and there's no V4L2 M2M encoder device). Explicit exec: so we
+  # control the exact ffmpeg cmd (go2rtc otherwise misdetects the http source as plain MJPEG).
+  # mpjpeg demux -> libx264 ultrafast/zerolatency -> RTSP into go2rtc's {output}.
+  dreame: "exec:/opt/ffmpeg -hide_banner -f mpjpeg -i http://127.0.0.1:8090/ -an -c:v libx264 -preset ultrafast -tune zerolatency -g 30 -pix_fmt yuv420p -f rtsp {output}"

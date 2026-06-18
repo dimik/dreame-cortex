@@ -66,6 +66,16 @@ if [ -x $CHROOT/opt/camstream ]; then
     logger -t postboot "camstream MJPEG server started on :8090"
 fi
 
+# --- H.264 / RTSP / WebRTC restream (go2rtc, on-robot, software libx264) ---
+# Pulls camstream's MJPEG on demand and transcodes to H.264 (no HW H.264 on this device — cedar
+# encoder is locked, no V4L2 M2M encoder). On-demand: no viewer -> no transcode -> camsiphon off.
+#   RTSP rtsp://<ip>:8554/dreame   WebRTC http://<ip>:1984/
+if [ -x $CHROOT/opt/go2rtc ] && [ -x $CHROOT/opt/ffmpeg ]; then
+    setsid chroot $CHROOT sh -c "/opt/go2rtc -config /opt/go2rtc.yaml" > /tmp/go2rtc.log 2>&1 </dev/null &
+    echo "go2rtc H.264/RTSP/WebRTC started (:8554 / :1984)"
+    logger -t postboot "go2rtc started (:8554 / :1984)"
+fi
+
 # --- work_mode check ---
 WMODE=$(avacmd msg_cvt '{"type":"msgCvt","cmd":"get_prop","prop":"work_mode"}' 2>/dev/null)
 echo "work_mode at postboot start: $WMODE"
