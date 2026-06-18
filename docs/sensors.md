@@ -206,8 +206,17 @@ wheel dist delta L=0 R=0         -> not moving
 calibration pass, but structure + values are confirmed sane.)
 
 **TODO — IMU calibration constants** (before using the IMU for nav/fusion on the Q6A):
-- Accel scale looks like **16384 LSB/g** (MPU-style) — the upright reading `accel_z=16411 ≈ 1.002 g` confirms it; verify on ±X/±Y by physically tilting.
-- Gyro: capture a **static run** (robot stationary, ~30 s) to get the **zero-rate bias** per axis (subtract it), then a **known-rotation run** (e.g. spin 360° on the spot, integrate) to solve the **LSB-per-°/s** scale.
+- **Chip is a Bosch BMI055** (per `~/dreame_mcu_protocol/dreame_z10_notes.md`) — so scales come from
+  its datasheet once the configured range is known; no blind solving needed.
+- **r2250 sends raw BMI055 LSB** (our `accel_z=16411 ≈ 16384 LSB/g` = ±2 g range). This **differs from
+  the Z10 repo's `Status10ms` decode** (`mcu_packets.py`: `gyro /= 100` → °/s, `accel /= 1000` → g,
+  i.e. the Z10 firmware pre-scales to centi-°/s and milli-g). So don't reuse the Z10 divisors verbatim.
+- Accel: ±2 g ⇒ **16384 LSB/g** (confirmed upright). Verify ±X/±Y by tilting.
+- Gyro: confirm the BMI055 range register → datasheet **LSB/(°/s)** (e.g. ±2000°/s→16.4, ±125°/s→262.4);
+  a slow known-rotation run only *validates* it. Then capture a ~30 s **static run** for the per-axis
+  **zero-rate bias** (subtract it — else heading drifts).
+- On-device helpers exist: `avacmd msg_cvt '{"type":"msgCvt","cmd":"calibration","value":"gyro20"}'`
+  (also `gyro21`, `light1x/2x`) — Z10-documented; worth probing whether r2250 honors them.
 - Record the final `{accel_scale, gyro_scale, gyro_bias[3]}` here and in the Q6A `imu_node` config.
 
 IMU/compass ICs per the Z10 reference (D10s may differ): gyro XV7001, IMU BMI055, compass QMCX983.
