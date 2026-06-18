@@ -188,6 +188,11 @@ wheel dist delta L=0 R=0         -> not moving
 (Status20ms/100ms byte layout differs slightly from the Z10 reference; gyro/accel scaling needs a
 calibration pass, but structure + values are confirmed sane.)
 
+**TODO — IMU calibration constants** (before using the IMU for nav/fusion on the Q6A):
+- Accel scale looks like **16384 LSB/g** (MPU-style) — the upright reading `accel_z=16411 ≈ 1.002 g` confirms it; verify on ±X/±Y by physically tilting.
+- Gyro: capture a **static run** (robot stationary, ~30 s) to get the **zero-rate bias** per axis (subtract it), then a **known-rotation run** (e.g. spin 360° on the spot, integrate) to solve the **LSB-per-°/s** scale.
+- Record the final `{accel_scale, gyro_scale, gyro_bias[3]}` here and in the Q6A `imu_node` config.
+
 IMU/compass ICs per the Z10 reference (D10s may differ): gyro XV7001, IMU BMI055, compass QMCX983.
 
 ---
@@ -195,8 +200,10 @@ IMU/compass ICs per the Z10 reference (D10s may differ): gyro XV7001, IMU BMI055
 ## Recommended data plumbing for the rover (Radxa Q6A)
 
 - **LiDAR scan + map + pose** → Valetudo **MQTT** → ROS `/scan`, `/map`, `/odom`.
-- **Camera** → for now, poll `/data/ai_offline_collection/*.jpg`; longer-term, wire a real
-  `/dev/video0` stream (needs `media-ctl` + `gst`/`ffmpeg` installed, sensor freed).
+- **Camera** → **DONE**: camsiphon (read-only `/dev/video2` tap) → camstream (cedar HW-JPEG, MJPEG
+  :8090) → go2rtc (H.264 RTSP `:8554` / WebRTC `:1984`). See the camera-stream sections above.
+  (The old "wire a `/dev/video0` stream via media-ctl+gst" idea is a **dead end** — reconfiguring
+  video0 while AVA holds the sensor deadlocks the ISP/kernel — and is now superseded; don't.)
 - **IMU / odometry / currents / triggers / battery** → tap the MCU stream on `ttyS4`
   (read-only strace or a small forwarder), decode with `mcu_packets.py`.
 - **Mic** → not available.

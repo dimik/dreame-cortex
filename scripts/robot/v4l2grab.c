@@ -5,6 +5,12 @@
  * MULTI-PLANE capture device (V4L2_CAP_VIDEO_CAPTURE_MPLANE), so the *_MPLANE API is used.
  * AVA streams the sensor on /dev/video2; /dev/video0 is a second VIN node (usually free).
  *
+ * ⚠️ DEAD END — DO NOT RUN ON A LIVE ROBOT. Configuring /dev/video0 (S_FMT) while AVA holds the
+ * sensor on /dev/video2 shares one ISP and DEADLOCKS the kernel (uninterruptible D-state, needs a
+ * reboot) — observed and reproduced. The NV12 hardcode / lack of retry here are moot: the whole
+ * video0-takeover route is superseded by the SAFE path (camsiphon read-only /dev/video2 tap →
+ * camstream cedar-JPEG → go2rtc). Kept only as a record of the attempt. See docs/sensors.md.
+ *
  * Build & run inside the Ubuntu chroot (links chroot glibc; /dev is bind-mounted there):
  *   gcc-13 -O2 -o /data/chroot/usr/local/bin/v4l2grab /tmp/v4l2grab.c
  *   chroot /data/chroot /usr/local/bin/v4l2grab /dev/video0 /tmp/frame.ppm
