@@ -26,11 +26,13 @@ Link options (in order of preference):
    bind** (wrong struct offsets → watchdog reboot); the bug is in the bind path, so ECM crashes the
    same way. Fix = mainline 4.9.191 (exact vermagic) + those BSP header deltas, `KCFLAGS=
    -DCONFIG_USB_SUNXI_UDC0=1`. Source of the deltas: GitHub `HandsomeMod/linux-allwinner-4.9`. Load:
-   `scripts/robot/usb_ncm_gadget.sh` (ECM variant: `usb_ecm_gadget.sh`) — all RAM-only (`/tmp` +
-   configfs), reboot-safe. **PROVEN on hardware:** binds clean, `usb0`=`192.168.10.1`, >1 GB moved at
-   0 errors. **Measured ~11–12 MB/s @ ~2.7 ms** — a hard Allwinner `sw_udc` DMA ceiling (64K NTB no
+   `scripts/robot/usb_ecm_gadget.sh` (ECM, preferred; NCM variant: `usb_ncm_gadget.sh`) — all RAM-only
+   (`/tmp` + configfs), reboot-safe. **PROVEN on hardware:** binds clean, `usb0`=`192.168.10.1`, >1 GB
+   moved at 0 errors. **Measured ~11–12 MB/s; latency 0.5 ms (ECM) / 2.7 ms (NCM)** — throughput is a
+   hard Allwinner `sw_udc` DMA ceiling (64K NTB no
    gain, parallel no headroom, CPU idle), *not* a framing limit, so USB-2.0's ~280 Mbit/s is never
-   reached. Fine for H.264/compressed video + ROS topics, not raw streams. The adapter's **"Micro USB
+   reached — which is why **ECM (not NCM) is preferred**: same throughput, 5× lower latency.
+   Fine for H.264/compressed video + ROS topics, not raw streams. The adapter's **"Micro USB
    VBUS" jumper must be bridged solidly** or nothing enumerates. FunctionFS (`USB_F_FS=y`) is a
    no-build userspace fallback. **Full build/deploy/findings reference: `docs/usb-gadget.md`.** See
    [[usb-gadget-ethernet-abi-fix]].

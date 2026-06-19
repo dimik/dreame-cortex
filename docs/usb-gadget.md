@@ -5,10 +5,11 @@ ethernet-gadget kernel modules for the Dreame D10s Pro, deploying them, and the 
 measured behaviour. If anything here drifts from reality, fix *this file*.
 
 > **Status (2026-06): WORKING.** The gadget binds cleanly and passes IP traffic end-to-end
-> (proven: ping + >1 GB transferred, 0 errors). Throughput **~11–12 MB/s @ ~2.7 ms** — a hard
-> `sw_udc` (Allwinner UDC) ceiling, not a framing limit. Good for H.264/compressed video +
-> ROS 2 topics; not raw uncompressed streams. The one fragile piece is the adapter's **"Micro
-> USB VBUS" jumper**, which must be bridged *solidly*.
+> (proven: ping + >1 GB transferred, 0 errors). Throughput **~11–12 MB/s** — a hard `sw_udc`
+> (Allwinner UDC) ceiling, not a framing limit. Good for H.264/compressed video + ROS 2 topics;
+> not raw uncompressed streams. **ECM is the preferred default over NCM** (same throughput, but
+> 0.5 ms vs 2.7 ms latency — see §7). The one fragile piece is the adapter's **"Micro USB VBUS"
+> jumper**, which must be bridged *solidly*.
 
 ---
 
@@ -209,10 +210,11 @@ for f in u_ether.ko usb_f_ncm.ko usb_f_ecm.ko; do
 done
 ```
 
-Then run **`scripts/robot/usb_ncm_gadget.sh`** (on the robot) — it loads the modules, builds the
-ConfigFS gadget with **pinned MACs**, forces peripheral role, binds the UDC, and sets the
-robot-side IP + static ARP. `usb_ncm_gadget.sh down` tears it all down. (ECM variant:
-`usb_ecm_gadget.sh`.)
+Then run **`scripts/robot/usb_ecm_gadget.sh`** (on the robot; the preferred default — see §7) — it
+loads the modules, builds the ConfigFS gadget with **pinned MACs**, forces peripheral role, binds
+the UDC, and sets the robot-side IP + static ARP. `usb_ecm_gadget.sh down` tears it all down. The
+**`usb_ncm_gadget.sh`** variant is identical but uses the NCM function (only worth it for frame
+aggregation, which doesn't help on this UDC).
 
 Key robot-side details the script handles (and why):
 - **Force peripheral role:** the sunxi OTG manager picks role by ID pin; force device mode by
@@ -233,19 +235,23 @@ all; nothing is written to eMMC. If a bind ever crashes, the watchdog reboots ba
 
 ## 7. Findings (measured, 2026-06)
 
-### Throughput / latency
-| Test | 16K NTB | 64K NTB |
-|------|---------|---------|
-| host → robot | 11.0 MB/s | 11.3 MB/s |
-| robot → host | 11.9 MB/s | ~same |
-| ping latency | **2.7 ms** | 6.7 ms |
-| 3× parallel streams | 10.4 MB/s (no headroom) | — |
+### Throughput / latency (measured)
+| Test | NCM 16K | NCM 64K | **ECM** |
+|------|---------|---------|---------|
+| host → robot | 11.0 MB/s | 11.3 MB/s | 11.9 MB/s |
+| robot → host | 11.9 MB/s | ~same | 10.7 MB/s |
+| **ping latency** | 2.7 ms | 6.7 ms | **0.51 ms** |
+| 3× parallel | 10.4 MB/s (no headroom) | — | — |
 
-**The ceiling is the Allwinner `sw_udc` DMA engine (~90 Mbit/s), not NCM framing.** Evidence:
-larger NTBs gave no gain, parallel streams gave no headroom, and the robot CPU was ~45% idle
-during transfers. There is **no software lever** that moves it. → We ship **16K NTB** (lower
-latency, identical throughput). ECM cannot beat NCM here (same UDC/`u_ether` path; ECM only
-*removes* aggregation) — expect ≤ NCM on throughput, maybe ~1 ms lower latency.
+**The ceiling is the Allwinner `sw_udc` DMA engine (~90 Mbit/s), not framing.** Evidence: larger
+NTBs gave no gain, parallel streams gave no headroom, robot CPU ~45% idle during transfers. No
+software lever moves it.
+
+**→ ECM is the preferred default.** Throughput is a wash between ECM and NCM (all ~11–12 MB/s,
+within noise), because the UDC caps *below* where NCM's aggregation would help — so NCM's only
+theoretical advantage never materialises. ECM has **no NTB coalescing timer**, so its latency is
+**5× lower (0.51 ms vs 2.7 ms)**, which matters for ROS control loops. NCM (16K) remains built &
+available if you ever want aggregation; 64K NTB is pointless here (no gain, +4 ms latency).
 
 ### The VBUS jumper (the real reliability blocker)
 The dontvacuum "dreameadapter" only senses host VBUS through its **"Micro USB VBUS" solder
@@ -282,9 +288,9 @@ Robot `usb0` = `192.168.10.1/24`; host = `192.168.10.2/24`.
 2. Build per §4; verify vermagic + BSP-field presence.
 3. `cp` the three `.ko` to `kernel/modules/`, refresh `SHA256SUMS`.
 4. Push to robot `/tmp` per §6.
-5. Run `scripts/robot/usb_ncm_gadget.sh` on the robot.
+5. Run `scripts/robot/usb_ecm_gadget.sh` on the robot (or `usb_ncm_gadget.sh` for NCM).
 6. Bridge the **Micro USB VBUS** jumper (solid); plug micro-USB → host.
 7. Host: unmanage in NM, set `192.168.10.2/24` + static ARP, `ping 192.168.10.1`.
-8. Expect ~11–12 MB/s, ~2.7 ms.
+8. Expect ~11–12 MB/s; latency ~0.5 ms (ECM) / ~2.7 ms (NCM).
 
 Related: `docs/hardware.md` (board/USB overview), memory `usb-gadget-ethernet-abi-fix`.

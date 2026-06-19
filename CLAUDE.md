@@ -52,12 +52,14 @@ host port** for a USB-Ethernet adapter (earlier docs wrongly assumed one). Robot
   mainline build insmods but **crashes at UDC bind** — function-independent, so ECM crashes the same).
   Fix = mainline 4.9.191 + BSP deltas, `KCFLAGS=-DCONFIG_USB_SUNXI_UDC0=1`; deltas from GitHub
   `HandsomeMod/linux-allwinner-4.9`. **PROVEN end-to-end:** binds, `usb0`=192.168.10.1 / host
-  192.168.10.2, ping 2.7 ms, >1 GB at 0 errors. **Throughput ~11–12 MB/s — a hard `sw_udc` DMA
-  ceiling, NOT the bus or framing** (64K NTB no gain, parallel no headroom, CPU idle); so USB-2.0's
-  ~280 Mbit/s is never reached and **ECM won't beat NCM**. Fine for H.264/compressed video + ROS
-  topics, not raw streams. Needs the dontvacuum adapter's **"Micro USB VBUS" jumper bridged solidly**.
-  Load: `scripts/robot/usb_ncm_gadget.sh`. **Full reproducible build/deploy/findings:
-  `docs/usb-gadget.md`.** FunctionFS (`F_FS=y`) is a no-kernel-build userspace fallback.
+  192.168.10.2, >1 GB at 0 errors. **Throughput ~11–12 MB/s — a hard `sw_udc` DMA ceiling, NOT the
+  bus or framing** (64K NTB no gain, parallel no headroom, CPU idle); USB-2.0's ~280 Mbit/s is never
+  reached. **ECM is the preferred default over NCM:** identical throughput (measured both), but 5×
+  lower latency (**0.5 ms ECM vs 2.7 ms NCM**) since ECM has no NTB coalescing — NCM's aggregation
+  buys nothing below the UDC cap. Fine for H.264/compressed video + ROS topics, not raw streams.
+  Needs the dontvacuum adapter's **"Micro USB VBUS" jumper bridged solidly**. Load:
+  `scripts/robot/usb_ecm_gadget.sh` (or `usb_ncm_gadget.sh`). **Full reproducible build/deploy/
+  findings: `docs/usb-gadget.md`.** FunctionFS (`F_FS=y`) is a no-kernel-build userspace fallback.
 - **WiFi (simplest, works today, no kernel work):** both on the LAN; Q6A → robot at `192.168.1.213`.
 - OTG→host (ID-grounded adapter) + a USB-Ethernet/BT dongle is possible too, but occupies the debug
   port and VBUS drive there is unverified.
