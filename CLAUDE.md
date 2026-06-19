@@ -35,10 +35,24 @@ Turn a Dreame D10s Pro robot vacuum into an open AI platform:
 - OS: Ubuntu 24.04 (Armbian) — ROS 2 Jazzy Tier 1 native
 - Size: 85×56mm — fits in D10s Pro top compartment
 
-### Physical link
-Robot USB 2.0 host → USB-Ethernet adapter → Cat5e → Dragon Q6A GbE
-- Robot static IP on link: `192.168.10.1`
-- Dragon Q6A static IP on link: `192.168.10.2`
+### Physical link (Q6A ↔ robot)
+**The robot exposes only ONE USB port — the OTG/debug port** (`usbc0` = `allwinner,sunxi-otg-manager`,
+gadget serial `athena`, used for rooting/flashing). The SoC's 2nd USB controller (`usbc1` → `ehci1`/
+`ohci1` @0x05200000) is **enabled in the Tina BSP but NOT connectorized**: its DT node is bare (no
+`usb_port_type`/`usb_id_gpio`/`usb_det_vbus_gpio`/VBUS-drive GPIO; `usb1-vbus` is a `regulator-fixed`
+stub with empty gpio), `/sys/kernel/debug/usb/devices` shows only the two root hubs, and nothing
+enumerates. Community rooting hardware also exposes a single OTG header. So **there is no spare USB
+host port** for a USB-Ethernet adapter (earlier docs wrongly assumed one). Robot↔Q6A link options:
+- **USB gadget-Ethernet (preferred wired):** robot OTG in *device* mode (`g_ether`/configfs) → appears
+  as a USB NIC to the Q6A (which is USB host). One cable, the existing OTG port — no host port needed.
+  Robot `192.168.10.1` / Q6A `192.168.10.2`.
+- **WiFi (simplest):** both on the LAN; Q6A reaches the robot at its IP (`192.168.1.213`).
+- OTG→host (ID-grounded adapter) + a USB-Ethernet/BT dongle is possible too, but occupies the debug
+  port and VBUS drive there is unverified.
+
+Power: Q6A off the robot 14.8 V battery via a 12 V buck (not USB — the port is current-limited).
+ROS: same `ROS_DOMAIN_ID` over the link (wired DDS works; WiFi needs FastDDS unicast peers), or the
+appliance/HTTP model (`valetudo_bridge --host`). See `docs/ros.md`.
 
 ---
 

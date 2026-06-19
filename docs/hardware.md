@@ -7,18 +7,24 @@
 | Dreame D10s Pro (r2250) | Robot | AllWinner MR813 (quad Cortex-A7 @ 1.2GHz) | 3.3GB /data partition |
 | Radxa Dragon Q6A | Companion / AI | Qualcomm QCS6490 (Kryo, 12 TOPS NPU) | 85×56mm, runs all ROS 2 |
 
-## Physical connection
+## Physical connection (Q6A ↔ robot)
 
-```
-Robot USB 2.0 host port
-  └─► USB-Ethernet adapter (any RTL8152/AX88179)
-        └─► Cat5e patch cable
-              └─► Dragon Q6A Gigabit Ethernet port
-```
+⚠️ **The robot exposes only ONE USB port — the OTG/debug port** (`usbc0` = `allwinner,sunxi-otg-manager`,
+used for rooting). The SoC's 2nd USB controller (`usbc1`/`ehci1`) is enabled in the Tina BSP but **not
+wired to a connector** (bare DT node — no port_type/detect/VBUS-drive GPIO; `usb1-vbus` is a fixed
+stub; only the two root hubs in `/sys/kernel/debug/usb/devices`; nothing enumerates). So the old
+"USB-host → USB-Ethernet → GbE" plan below **does not apply** — there is no spare host port.
 
-Assign static IPs on the dedicated link:
-- Robot: `192.168.10.1`
-- Dragon Q6A: `192.168.10.2`
+Link options (in order of preference):
+1. **USB gadget-Ethernet (wired, one cable):** robot OTG in *device* mode (`g_ether`) → a USB NIC to
+   the Q6A (USB host). Uses the existing OTG/debug port; no host port or adapter needed.
+2. **WiFi (simplest):** both on the LAN; Q6A reaches the robot at `192.168.1.213`.
+3. OTG→host (ID-grounded adapter) + USB-Ethernet dongle — possible but occupies the debug port,
+   VBUS-on-that-port unverified.
+
+Static IPs on a dedicated (gadget-Ethernet) link: robot `192.168.10.1`, Q6A `192.168.10.2`.
+~~Robot USB 2.0 host port → USB-Ethernet adapter → Cat5e → Q6A GbE~~ (assumed a host port that the
+D10s Pro does not expose).
 
 ## Power
 
