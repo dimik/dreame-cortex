@@ -81,20 +81,28 @@ LDS) exclusively — so there's no clean `sensor_msgs/LaserScan` source. Decide 
   go2rtc) + the **Q6A NPU** as a vision obstacle layer. Leverages what we have; zero robot risk.
 - **Real live 360° scan / own SLAM** → add a **dedicated USB lidar on the Q6A** (LD06/LD19/RPLiDAR,
   ~$70) → native LaserScan from its driver. Robust, standard; the robot's lidar stays AVA's.
-- **Tap raw ttyS3 in AVA** → **PARKED** — same `read()`-interposition wall as the IMU tap (mcutap);
-  only revisit with an AVA-safe tap mechanism. Synthetic ray-cast from the map adds nothing over
-  nav2's static layer and is circular for localization — skip it.
+- **Tap raw ttyS3 in AVA** → **VIABLE + protocol DECODED** (2026-06-19). The earlier "read() breaks
+  AVA" wall was a bug in *our* shim, not a property of AVA: the freestanding `read()` returned the raw
+  `-errno` instead of glibc's `-1`+`errno`, so AVA's non-blocking loops choked. With the errno fix
+  (verified: AVA runs normally with an errno-correct `read()` interposer mapped in), an fd-specific
+  ttyS3 tap keyed on the LDS sync `55 aa` → shm-ring tee → LDS decoder → `sensor_msgs/LaserScan` is
+  the path to the robot's *own* 360° lidar. The **LDS frame format is now fully decoded** (40-byte
+  frame, 8 samples/frame, LE16 mm + angle/65536·360°; see `docs/sensors.md`) and validated against a
+  live capture (1188 frames → coherent room scan). Remaining: the production shim + ring + publisher.
+  Synthetic ray-cast from the map is still pointless — this gives real ranges.
 
-**Recommendation:** ship v1 nav on `/map` + pose (no `/scan`); add live sensing on the Q6A side
-(camera+NPU, or a cheap USB lidar) when needed. Don't reach into AVA for ttyS3.
+**Recommendation:** ship v1 nav on `/map` + pose now; for live 360° sensing, the robot's own lidar
+via the ttyS3 tap is now the preferred path (no extra hardware) — vs. a USB lidar on the Q6A as the
+zero-AVA-risk fallback.
 
-## Parked: raw IMU / wheel-odom over ttyS4
+## Raw IMU / wheel-odom over ttyS4 — unblocked, not yet built
 
-Validated but deferred — `scripts/robot/mcutap.c` would tap AVA's MCU Status stream (IMU gyro/accel,
-wheel odom, currents), but the LD_PRELOAD `read()` interposition destabilises AVA. See
-`docs/sensors.md` (Microphone/IMU sections) for the full finding + the AVA-safe-tap open question.
-Until then, `/odom` is Valetudo's SLAM pose (good for nav), not raw dead-reckoning, and there's no
-`sensor_msgs/Imu`.
+`scripts/robot/mcutap.c` taps AVA's MCU Status stream (IMU gyro/accel, wheel odom, currents) on
+`/dev/ttyS4` (frames start `0x3c`). It was parked because the `read()` interposition destabilised
+AVA — **now traced to the errno-contract bug** (returned `-errno`, not `-1`+`errno`); with the fix it
+runs (see `mcutap.c` header + `docs/sensors.md`). Remaining before preloading for real: swap the
+per-frame `sendto` for a shm-ring tee (no syscall in AVA's hot path). Until built, `/odom` is
+Valetudo's SLAM pose (good for nav), not raw dead-reckoning, and there's no `sensor_msgs/Imu`.
 
 ## Roadmap
 
@@ -104,8 +112,8 @@ Until then, `/odom` is Valetudo's SLAM pose (good for nav), not raw dead-reckoni
 - [ ] nav2 bringup on the Q6A consuming `/map` + TF; goals → Valetudo REST move commands
 - [ ] camera into ROS (the go2rtc RTSP/WebRTC feed → an `image` topic if wanted)
 - [ ] live obstacle sensing on the Q6A when needed: camera+NPU layer, or a dedicated USB lidar
-- [ ] (parked) raw `/scan` via ttyS3 tap + `sensor_msgs/Imu` via ttyS4 tap — both blocked on an
-      AVA-safe read tap (see mcutap.c / docs/sensors.md)
+- [ ] raw `/scan` via ttyS3 tap + `sensor_msgs/Imu` via ttyS4 tap — **read-tap unblocked** (errno
+      fix verified); remaining: LDS frame decode + shm-ring tee (see mcutap.c / docs/sensors.md)
 
 ## Gotchas
 

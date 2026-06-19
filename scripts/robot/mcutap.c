@@ -1,14 +1,17 @@
 /* ============================================================================================
  * mcutap.c — LD_PRELOAD read-tap for the MCU sensor stream (Dreame D10s Pro, /dev/ttyS4).
  *
- * ⚠️ PARKED — DO NOT PRELOAD INTO AVA. The tap itself is validated (strace confirmed AVA reads
- * Status frames on ttyS4 fd 24; they decode perfectly — IMU accel_z=1.000g, odom x/y/yaw, matching
- * the alufers formats). BUT interposing read() destabilises AVA's startup (it wouldn't relaunch),
- * whereas write/mmap/ioctl/openat (fanoff, camsiphon) are fine — read() is AVA's hot, threaded,
- * real-time MCU path. Recovered each time; this is kept only as a record of the working tap design.
- * Decision (2026-06-19): defer raw-IMU; ship odom/pose/scan via Valetudo MQTT -> ROS instead.
- * To revisit, the open problem is an AVA-SAFE tap mechanism (e.g. confirm whether a no-op read()
- * interposer alone breaks AVA → if not, an fd-specific tap + shm tee merged into camsiphon).
+ * STATUS — read() interposition IS VIABLE with the errno fix below (verified 2026-06-19: AVA runs
+ * normally with an errno-correct read() interposer mapped in; `accel_z=1.000g`/odom decode confirmed
+ * earlier via strace). The original mcutap broke AVA NOT because interposing read() is unsafe, but
+ * because the freestanding read() returned the raw syscall value (`-errno`) instead of glibc's
+ * contract (return -1 and set errno) — AVA's non-blocking read/select loops saw e.g. -11 instead of
+ * -1/EAGAIN and choked. Fixed here via __errno_location (resolved from the host glibc at load).
+ *
+ * REMAINING for a production tap: the per-frame `sendto` below is a syscall in AVA's hot read path
+ * — replace with a shm-ring tee (memcpy, no syscall) before preloading for real. A LiDAR variant
+ * keys on the LDS frame marker 0x55 0xaa on /dev/ttyS3 instead of 0x3c on ttyS4. This unblocks both
+ * the raw-IMU and raw-/scan taps (see docs/ros.md, docs/sensors.md).
  * ============================================================================================
  * AVA reads the MCU Status stream (IMU gyro/accel, wheel odometry, motor currents, triggers)
  * from /dev/ttyS4. We can't open that port ourselves (AVA holds it exclusively), so this shim
@@ -42,6 +45,12 @@
 
 struct iovec { void *iov_base; size_t iov_len; };
 
+/* glibc errno contract: on error, return -1 and set errno — NOT the raw -errno. AVA's non-blocking
+ * read/select loops choke on a raw -errno (they expect -1/EAGAIN). __errno_location resolves from
+ * the host glibc at load (thread-local errno). This was the bug that broke the original tap. */
+extern int *__errno_location(void);
+static long ret(long r){ if (r < 0) { *__errno_location() = (int)(-r); return -1; } return r; }
+
 static long sys3(long n,long a,long b,long c){register long x8 asm("x8")=n,x0 asm("x0")=a,x1 asm("x1")=b,x2 asm("x2")=c;asm volatile("svc #0":"+r"(x0):"r"(x8),"r"(x1),"r"(x2):"memory","cc");return x0;}
 static long sys6(long n,long a,long b,long c,long d,long e,long f){register long x8 asm("x8")=n,x0 asm("x0")=a,x1 asm("x1")=b,x2 asm("x2")=c,x3 asm("x3")=d,x4 asm("x4")=e,x5 asm("x5")=f;asm volatile("svc #0":"+r"(x0):"r"(x8),"r"(x1),"r"(x2),"r"(x3),"r"(x4),"r"(x5):"memory","cc");return x0;}
 
@@ -69,7 +78,7 @@ static void tee(const void *buf, long n) {
 long read(int fd, void *buf, size_t count) {
     long r = sys3(SYS_read, fd, (long)buf, (long)count);
     if (r >= 4 && ((const unsigned char *)buf)[0] == 0x3c) tee(buf, r);
-    return r;
+    return ret(r);
 }
 
 long readv(int fd, const struct iovec *iov, int iovcnt) {
@@ -82,5 +91,5 @@ long readv(int fd, const struct iovec *iov, int iovcnt) {
             tee(iov[i].iov_base, m); left -= m;
         }
     }
-    return r;
+    return ret(r);
 }

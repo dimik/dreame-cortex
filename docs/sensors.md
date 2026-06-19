@@ -14,18 +14,56 @@ All verified live on 2026-06-15/16.
 
 ## LiDAR turret (LDS)
 
-A 360° spinning laser distance sensor on **`/dev/ttyS3` @ 230400 baud**, read by `node_lds.so`.
-Frame format is **`55 aa` + 36 data bytes** (38 B total) — angle + distance points per rotation.
-This is a *different* protocol from the MCU link and is what older notes mislabeled as the
-"MCU 55 AA protocol".
+A 360° spinning laser distance sensor on **`/dev/ttyS3` @ 230400 baud**, read by `node_lds.so`
+(then `node_lds_calibration.so` → `node_lidar_slam.so`, all in-process inside AVA). This is a
+*different* protocol from the MCU link and is what older notes mislabeled as the "MCU 55 AA protocol".
 
 The **two holes** in the turret are the laser **emitter (TX)** window and the **receiver/photodiode
 (RX)** lens — standard triangulation-LiDAR layout (project a dot, read its offset reflection,
 distance = triangulation).
 
-Read path for the rover: AVA owns ttyS3 for SLAM, so consume the processed map/pose via the
-**Valetudo→ROS bridge** (REST/SSE, broker-free — `/map`, `/odom`; see `docs/ros.md`) rather than
-tapping the raw serial. (Valetudo doesn't expose a raw `/scan`; that's still TBD.)
+### Decoded LDS frame format (2026-06-19)
+
+Reverse-engineered from a live capture (errno-safe `strace -e read=26` of AVA while the turret spun
+in forced-allow manual mode — see the capture method below). **40-byte fixed frame**, little-endian,
+back-to-back, no inter-frame gap:
+
+| Off | Len | Field | Notes |
+|----:|----:|-------|-------|
+| 0   | 2   | sync `55 aa` | frame start |
+| 2   | 2   | type `03 08` | constant (frame/packet type) |
+| 4   | 2   | rotation speed | LE16; ~0x5E0A steady (settles from higher during spin-up) |
+| 6   | 2   | **start angle** | LE16; **unit = 360°/65536** (≈0.0055°); increments ~57/sample |
+| 8   | 24  | **8 samples** | each `[dist:LE16 mm][quality:1]`; `dist==0x8000` = no return/invalid |
+| 32  | 2   | **end angle** | LE16; `endAngle[n] ≈ startAngle[n+1]` (continuous) |
+| 34  | 2   | aux | unidentified (not needed for `/scan`) |
+| 38  | 1   | checksum | 1-byte; formula not yet cracked (simple sum/xor/CRC16 don't match) |
+| 39  | 1   | end marker `a4` | constant on every frame — use with `55 aa` to align |
+
+8 samples span `[startAngle, endAngle]`; `angle[k] = startAngle + (endAngle-startAngle)*k/8`. Decode
++ validation scripts live in the capture work; a 4 s capture (1188 frames, 7443 valid points,
+401–4764 mm) reconstructs a coherent top-down room scan, confirming the format.
+
+### Capturing raw LDS frames safely (no AVA restart)
+
+AVA owns ttyS3 exclusively and the turret only spins during active (non-manual) nav, so:
+1. Stop the `fanoff_flag.sh` gate daemon(s) and force `: > /tmp/lidar_allow` (the fanoff shim then
+   permits the turret).
+2. `PUT {"action":"enable"}` to `HighResolutionManualControlCapability` — robot stays **stationary**
+   (no move vector sent), no vacuuming, but AVA spins the turret and reads ttyS3.
+3. Capture: `chroot /data/chroot strace -f --seccomp-bpf -e trace=read -e read=26 -p $(pidof ava)`
+   — `--seccomp-bpf` keeps overhead negligible (AVA shrugged it off; pid unchanged).
+4. **Always restore:** disable manual, `rm /tmp/lidar_allow`, restart one `fanoff_flag.sh`.
+
+### Read path for the rover
+
+AVA owns ttyS3 for SLAM. Two routes to lidar data, in order of risk:
+- **Processed map/pose (live, zero risk):** the **Valetudo→ROS bridge** (REST/SSE, broker-free —
+  `/map`, `/odom`; see `docs/ros.md`). Valetudo exposes **no raw `/scan`**.
+- **Raw `/scan` via passive read-tap (unblocked, not yet built):** an errno-correct `read()`
+  interposer on fd 26 keyed on the `55 aa` framing → shm-ring tee → the decoder above →
+  `sensor_msgs/LaserScan`. Read interposition is now proven AVA-safe (see the MCU read-tap status
+  below); the protocol is decoded; remaining work is the shim + ring + publisher.
 
 ---
 
@@ -222,16 +260,22 @@ calibration pass, but structure + values are confirmed sane.)
 
 IMU/compass ICs per the Z10 reference (D10s may differ): gyro XV7001, IMU BMI055, compass QMCX983.
 
-**MCU read-tap status (2026-06-19): validated but PARKED.** strace confirmed AVA reads Status
-frames on ttyS4 fd 24 and they decode perfectly (IMU `accel_z=1.000g`, odom x/y/yaw, match the
-alufers formats). An LD_PRELOAD read-tap (`scripts/robot/mcutap.c`) was built to forward them, but
-**interposing `read()` destabilises AVA's startup** (it wouldn't relaunch) — unlike write/mmap/
-ioctl/openat (fanoff, camsiphon), which are fine; `read()` is AVA's hot, threaded, real-time MCU
-path. So raw IMU/currents/triggers over ttyS4 are **deferred**. For ROS v1, ship **map + pose via
-Valetudo's REST/SSE API** → the bridge (`scripts/robot/valetudo_bridge.py`, see `docs/ros.md`).
-Revisit the raw tap later with an
-AVA-safe mechanism (open question: does a no-op `read()` interposer alone break AVA? if not, an
-fd-specific tap + shm tee folded into camsiphon). `mcutap.c` is kept as the working tap reference.
+**MCU read-tap status (2026-06-19): read interposition UNBLOCKED, build pending.** strace confirmed
+AVA reads Status frames on ttyS4 fd 24 and they decode perfectly (IMU `accel_z=1.000g`, odom x/y/yaw,
+match the alufers formats). The first read-tap (`scripts/robot/mcutap.c`) broke AVA's startup — but
+this was **not** because interposing `read()` is unsafe; it was a bug in the freestanding shim: it
+returned the raw syscall result (`-errno`) instead of honoring glibc's contract (**return `-1` and
+set `errno`**). AVA's non-blocking read/`select` loops saw e.g. `-11` instead of `-1`/`EAGAIN` and
+choked. **Verified the fix:** an errno-correct `read()` interposer (resolving `__errno_location` from
+host glibc, `ret(r){ if(r<0){ *__errno_location()=-r; return -1; } return r; }`) — AVA launches and
+runs normally with it mapped in. So read interposition is viable; the IMU tap (ttyS4, frames `0x3c`)
+and the lidar tap (ttyS3, LDS marker `0x55 0xaa`) are both unblocked.
+
+Remaining before preloading a real tap: (1) replace the per-frame `sendto` with a **shm-ring tee**
+(memcpy, no syscall in AVA's hot path — the `sendto` overhead was the other suspected risk); (2) for
+lidar, decode the LDS frame format off ttyS3. Until built, ROS v1 ships **map + pose via Valetudo's
+REST/SSE API** → the bridge (`scripts/robot/valetudo_bridge.py`, see `docs/ros.md`). `mcutap.c` holds
+the errno fix + design notes.
 
 ---
 
