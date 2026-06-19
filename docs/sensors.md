@@ -290,6 +290,30 @@ activity, and a "hold still at startup" bias calibration can't work; `mcu_node` 
 
 ---
 
+## Battery / charging
+
+The battery **level** works fine through Valetudo (updates correctly, e.g. 91→100% while charging),
+but Valetudo's **charging FLAG is stuck at `none`** on the D10S Pro — even while actively charging.
+That is a **Valetudo mapping gap** (its `DreameD10SProValetudoRobot` reads the level but never maps
+the charging state for this firmware), **not** anything in our setup.
+
+AVA itself reports the truth via the **`charge_state`** property (values `charging` / `not charging`):
+```sh
+avacmd msg_cvt '{"type":"msgCvt","cmd":"get_prop","prop":"charge_state"}'   # -> {"value":"charging","ret":"ok"}
+avacmd msg_cvt '{"type":"msgCvt","cmd":"get_prop","prop":"battery"}'        # -> {"value":"100","ret":"ok"}
+```
+(AVA internally: `avanodemsgcvt::MsgBattery::SetBatteryLevel(int level, bool charging)`.) Note the
+**D10S Pro does NOT emit the MCU `BatteryStatus` packet (0x2B)** the Z10 does, so charging can't be
+read off the MCU serial stream — use `charge_state` via `avacmd`.
+
+**Correct `/battery` in ROS:** a host poller (in `_root_postboot.sh`) writes `charge_state` to
+`/tmp/charge_state` every 15 s; `valetudo_bridge.py` combines it with the Valetudo level and publishes
+`sensor_msgs/BatteryState` on **`/battery`** (`POWER_SUPPLY_STATUS` CHARGING / FULL / DISCHARGING) —
+bypassing Valetudo's broken flag. Republished by the bridge heartbeat (the attributes SSE only fires
+on change, so docked+full would otherwise never publish).
+
+---
+
 ## Recommended data plumbing for the rover (Radxa Q6A)
 
 - **Map + pose** → Valetudo **REST/SSE** → `valetudo_bridge.py` → ROS `/map`, `/odom` + TF (live; `docs/ros.md`). Raw `/scan` not exposed by Valetudo — TBD.

@@ -20,10 +20,19 @@ on the Q6A.
 | `/odom` | `nav_msgs/Odometry` | default (volatile) | `robot_position` entity (pose only; **no twist**) | 2 Hz heartbeat |
 | TF `map`→`base_link` | tf2 | — | same pose | 2 Hz heartbeat |
 | `/robot/status` | `std_msgs/String` | default | `StatusStateAttribute` (`value/flag`) | on attr change |
+| `/battery` | `sensor_msgs/BatteryState` | default | Valetudo level + AVA `charge_state` (`/tmp/charge_state`) | 2 Hz heartbeat |
 
-Plus **`/scan`** (`sensor_msgs/LaserScan`) from a *separate* pipeline — the robot's own 360° lidar via
-`libserialtap.so` → tmpfs shm ring → `lds_scan_node.py`. Publishes only while the turret spins (active
-nav); zero overhead when gated off. See "Tap raw ttyS3" below + `docs/sensors.md`.
+Plus, from *separate* pipelines on the same shim (`libserialtap.so` → tmpfs shm ring):
+- **`/scan`** (`sensor_msgs/LaserScan`) — the robot's own 360° lidar via `lds_scan_node.py`; only while
+  the turret spins (active nav), zero overhead when gated off.
+- **`/imu/data`** + **`/odom/wheel`** via `mcu_node.py` — only when the robot is active (the MCU emits
+  IMU only during motion). See "raw IMU" below + `docs/sensors.md`.
+
+And **`/robot/speak`** (`std_msgs/String`, subscribed by `audio_bridge.py`) — play an `.ogg` on the
+speaker via Dreame's mediad. See `docs/audio.md`.
+
+The **`/battery`** charging status comes from AVA's `charge_state`, not Valetudo's flag (which is stuck
+`none` on the D10S Pro — a Valetudo mapping gap; see `docs/sensors.md` Battery / charging).
 
 **Design (why this shape):** Valetudo's map SSE is *push-on-change with no initial snapshot*, so a
 docked/just-started robot would have no map until it moved → we GET the map once to seed, then ride

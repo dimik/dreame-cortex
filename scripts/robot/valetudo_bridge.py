@@ -26,6 +26,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from nav_msgs.msg import OccupancyGrid, Odometry
+from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
 from tf2_ros import TransformBroadcaster
 from geometry_msgs.msg import TransformStamped
@@ -42,18 +43,24 @@ class ValetudoBridge(Node):
         self.pub_map = self.create_publisher(OccupancyGrid, '/map', map_qos)
         self.pub_odom = self.create_publisher(Odometry, '/odom', 10)
         self.pub_status = self.create_publisher(String, '/robot/status', 10)
+        self.pub_battery = self.create_publisher(BatteryState, '/battery', 10)
         self.tf = TransformBroadcaster(self)
         self.pose = None   # (x, y, qz, qw), updated by SSE/seed, republished by the heartbeat
+        self.batt_level = None   # cached battery %, updated by attrs SSE/seed, republished by heartbeat
         # heartbeat: republish cached /odom + TF at 2 Hz so they stay fresh while idle (no HTTP —
         # the data comes from the SSE/seed; this just keeps TF from going stale for nav consumers)
         self.create_timer(0.5, self.pub_pose)
 
-        # seed the initial map+pose once via REST (the map SSE sends no snapshot on connect)
+        # seed the initial map+pose+attributes once via REST (the SSEs send no snapshot on connect)
         try:
             self.handle_map(self.fetch('/api/v2/robot/state/map'))
             self.get_logger().info('seeded initial map via REST')
         except Exception as e:
             self.get_logger().warn(f'initial map seed failed (will get it on first SSE update): {e}')
+        try:
+            self.handle_attrs(self.fetch('/api/v2/robot/state/attributes'))
+        except Exception as e:
+            self.get_logger().warn(f'initial attrs seed failed: {e}')
 
         # then push-driven: one SSE stream for the map, one for state attributes (no polling)
         threading.Thread(target=self.sse_loop,
@@ -142,7 +149,8 @@ class ValetudoBridge(Node):
             self.pose = (x, y, math.sin(yaw / 2.0), math.cos(yaw / 2.0))   # heartbeat republishes it
 
     def pub_pose(self):
-        """heartbeat (timer): republish the cached pose as /odom + map->base_link TF."""
+        """heartbeat (timer): republish cached /battery + pose (/odom + map->base_link TF)."""
+        self.publish_battery()
         if self.pose is None:
             return
         x, y, qz, qw = self.pose
@@ -170,6 +178,35 @@ class ValetudoBridge(Node):
         st = next((a for a in attrs if a.get('__class') == 'StatusStateAttribute'), None)
         if st:
             self.pub_status.publish(String(data=f"{st.get('value')}/{st.get('flag')}"))
+        # cache the battery level from the attributes SSE; /battery is republished by the heartbeat
+        # (the SSE only fires on change, so docked+full would otherwise never publish).
+        bat = next((a for a in attrs if a.get('__class') == 'BatteryStateAttribute'), None)
+        if bat is not None and bat.get('level') is not None:
+            self.batt_level = int(bat['level'])
+
+    def publish_battery(self):
+        """/battery from cached level + AVA's real charge_state (Valetudo's charging FLAG is stuck
+        'none' for the D10S Pro — a mapping gap; a host poller writes /tmp/charge_state). See docs."""
+        if self.batt_level is None:
+            return
+        b = BatteryState()
+        b.header.stamp = self.get_clock().now().to_msg()
+        b.percentage = self.batt_level / 100.0
+        b.present = True
+        charging = None
+        try:
+            with open('/tmp/charge_state') as f:
+                charging = f.read().strip()
+        except OSError:
+            pass
+        if charging == 'charging':
+            b.power_supply_status = (BatteryState.POWER_SUPPLY_STATUS_FULL if self.batt_level >= 100
+                                     else BatteryState.POWER_SUPPLY_STATUS_CHARGING)
+        elif charging in ('not charging', 'not charge'):
+            b.power_supply_status = BatteryState.POWER_SUPPLY_STATUS_DISCHARGING
+        else:
+            b.power_supply_status = BatteryState.POWER_SUPPLY_STATUS_UNKNOWN
+        self.pub_battery.publish(b)
 
 
 def main():

@@ -123,6 +123,25 @@ if [ -f $CHROOT/opt/mcu_node.py ]; then
     logger -t postboot "mcu_node (ROS imu/odom) started"
 fi
 
+# --- audio bridge: /robot/speak -> Dreame mediad (play OGG on the speaker, no ALSA contention) ---
+# Plays .ogg files through AVA's media daemon (mda_cli protocol over 127.0.0.1:10100), serialized
+# with AVA's own prompts. TTS happens on the companion (OGG -> /tmp -> /robot/speak). See docs/audio.md.
+if [ -f $CHROOT/opt/audio_bridge.py ]; then
+    setsid chroot $CHROOT bash -lc 'source /opt/ros/jazzy/setup.bash; exec python3 /opt/audio_bridge.py' > /tmp/audio_bridge.log 2>&1 </dev/null &
+    echo "audio_bridge (ROS /robot/speak) started"
+    logger -t postboot "audio_bridge started"
+fi
+
+# --- charge_state poller: Valetudo's battery charging FLAG is stuck 'none' for the D10S Pro (mapping
+# gap); AVA reports the truth via charge_state. Poll it (host avacmd) into /tmp/charge_state so the
+# chroot valetudo_bridge can publish a correct /battery. See docs/sensors.md (Battery / charging).
+(while true; do
+    v=$(avacmd msg_cvt '{"type":"msgCvt","cmd":"get_prop","prop":"charge_state"}' 2>/dev/null | sed -n 's/.*"value":"\([^"]*\)".*/\1/p')
+    [ -n "$v" ] && echo "$v" > /tmp/charge_state
+    sleep 15
+done) &
+echo "charge_state poller started"
+
 # LiDAR gate for the fanoff shim. The shim (preloaded onto AVA in _root.sh) always filters the
 # vacuum fan; this daemon allows the LiDAR turret to run in active non-manual modes and blocks
 # it during manual navigation (creates/removes /tmp/lidar_allow from Valetudo status). The fan
