@@ -278,14 +278,31 @@ theoretical advantage never materialises. ECM has **no NTB coalescing timer**, s
 **5× lower (0.51 ms vs 2.7 ms)**, which matters for ROS control loops. NCM (16K) remains built &
 available if you ever want aggregation; 64K NTB is pointless here (no gain, +4 ms latency).
 
-### The "Micro USB VBUS" jumper — NOT required (corrected)
+### The "Micro USB VBUS" jumper — NOT required; it's the robot's host-presence sense
 **The link works fine with this jumper left OPEN** — verified: multi-GB transfers + 60/60 pings
-0% loss over 30 s, jumper untouched. The robot senses host VBUS from the micro-USB connector
-without it. (The jumper most likely gates feeding the host's 5 V to *power the board* — only
-needed if running the robot off USB instead of its battery. Leave it open for normal data use.)
-> Earlier notes here wrongly claimed the jumper must be bridged and blamed it for dropouts. That
-> was a bad inference — see the host-side gotcha below for the actual cause. There is no software
-> VBUS override on this firmware (no `vbus` param / force interface), but none is needed.
+0% loss, and a full unplug/replug cycle that auto-recovered. What the jumper actually does:
+connect the host's 5 V to the robot's **VBUS-sense** line, i.e. let the robot *detect* whether a
+host is attached.
+
+With it **open** (our setup), the robot has **no VBUS sense at all** — confirmed by the hot-plug
+test: the UDC stays `configured` even after the cable is pulled (it never sees `not attached`). The
+gadget still works because forced device-mode (§6 role-on-read) holds the **D+ pull-up always on**,
+so the *host* drives enumeration whenever it's plugged in. Consequences:
+- **`udc state` is NOT a "host connected?" indicator** — it reads `configured` with nothing plugged
+  in. To know if a host is present, use the dnsmasq lease / ARP / a ping, not the UDC state.
+- Hot-plug recovery is **host-driven** and automatic (see hot-plug note below).
+- Bridging the jumper would give the robot real attach/detach detection — only worth it if some
+  robot-side logic must react to host presence. Not needed for the link to function.
+> Earlier notes wrongly said this jumper must be bridged (and blamed it for dropouts — those were
+> NetworkManager, see below) and later that "the robot senses VBUS without it" (it doesn't —
+> hot-plug test proved it). No software VBUS override exists on this firmware; none is needed.
+
+### Hot-plug behavior (unplug/replug) — auto-recovers, host-driven (verified)
+Pulling and reinserting the cable while both ends run: the robot doesn't notice (no VBUS sense,
+see above), but the **host** detects its own carrier drop/return, and NetworkManager re-DHCPs —
+the host gets `192.168.10.2` back and the link is up, **zero manual action**. Verified: dnsmasq
+re-leased `.2`, ping 0.37 ms after replug. Combined with the reboot test (§6.1), the link survives
+both robot reboots and cable yanks unattended.
 
 ### Host side — plug-and-play via DHCP (zero config; no per-boot sudo)
 The robot runs a dnsmasq on `usb0` (see §6.1), so the host just needs its gadget interface under
