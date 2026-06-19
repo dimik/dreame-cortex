@@ -32,17 +32,17 @@ Link options (in order of preference):
    hard Allwinner `sw_udc` DMA ceiling (64K NTB no
    gain, parallel no headroom, CPU idle), *not* a framing limit, so USB-2.0's ~280 Mbit/s is never
    reached — which is why **ECM (not NCM) is preferred**: same throughput, 5× lower latency.
-   Fine for H.264/compressed video + ROS topics, not raw streams. (The adapter's "Micro USB VBUS"
-   jumper is **not** required — link works with it open; the real host-side gotcha is telling
-   **NetworkManager** to leave the interface alone, else it flushes the static IP.) FunctionFS
-   (`USB_F_FS=y`) is a
-   no-build userspace fallback. **Full build/deploy/findings reference: `docs/usb-gadget.md`.** See
-   [[usb-gadget-ethernet-abi-fix]].
+   Fine for H.264/compressed video + ROS topics, not raw streams. (The "Micro USB VBUS" jumper is
+   **not** required — link works with it open.) **Boot-persistent + plug-and-play (reboot-verified):**
+   the gadget + a `usb0` DHCP server auto-start every boot via `_root_postboot.sh`, so the companion
+   just plugs in and DHCPs `192.168.10.2` — no host config, no per-boot commands. FunctionFS
+   (`USB_F_FS=y`) is a no-build userspace fallback. **Full build/deploy/findings reference:
+   `docs/usb-gadget.md`.** See [[usb-gadget-ethernet-abi-fix]].
 2. **WiFi (simplest, works today):** both on the LAN; Q6A reaches the robot at `192.168.1.213`.
 3. OTG→host (ID-grounded adapter) + USB-Ethernet dongle — possible but occupies the debug port,
    VBUS-on-that-port unverified.
 
-Static IPs on a dedicated (gadget-Ethernet) link: robot `192.168.10.1`, Q6A `192.168.10.2`.
+Addressing on the gadget-Ethernet link: robot `192.168.10.1` (static, runs DHCP), Q6A `192.168.10.2` (DHCP).
 ~~Robot USB 2.0 host port → USB-Ethernet adapter → Cat5e → Q6A GbE~~ (assumed a host port that the
 D10s Pro does not expose).
 

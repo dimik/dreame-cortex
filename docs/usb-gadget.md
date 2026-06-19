@@ -9,8 +9,9 @@ measured behaviour. If anything here drifts from reality, fix *this file*.
 > (Allwinner UDC) ceiling, not a framing limit. Good for H.264/compressed video + ROS 2 topics;
 > not raw uncompressed streams. **ECM is the preferred default over NCM** (same throughput, but
 > 0.5 ms vs 2.7 ms latency — see §7). The adapter's "Micro USB VBUS" jumper is **not** required
-> (link works with it open). The one host-side gotcha is **NetworkManager**, which must be told to
-> leave the interface alone or it flushes the static IP (see §7).
+> (link works with it open). **Boot-persistent + plug-and-play:** the gadget + a `usb0` DHCP server
+> auto-start every boot (§6.1), so the companion just plugs in and gets `192.168.10.2` — no host
+> config, no per-boot commands (reboot-verified).
 
 ---
 
@@ -226,11 +227,34 @@ Key robot-side details the script handles (and why):
   host iface `enxd67ffa3a49bd`).
 - **ConfigFS teardown order matters:** `rm -rf` fails ("Operation not permitted") on configfs.
   Must unlink the config symlink, then `rmdir` strings → configs → functions → strings → gadget.
-- **Static ARP** (`arp -s`) — busybox `ip neigh` lacks `add`/`replace`; NCM is unreliable at
-  broadcast/ARP so static entries both ends are required (see §7).
+- **Static ARP** (`arp -s`) — busybox `ip neigh` lacks `add`/`replace`. Needed for **NCM** (poor
+  broadcast/ARP); **ECM resolves ARP normally and needs no static entry** (verified).
 
-Everything is **RAM-only** (modules in `/tmp`, ConfigFS volatile, IP runtime). A reboot wipes it
-all; nothing is written to eMMC. If a bind ever crashes, the watchdog reboots back to normal.
+When run by hand, everything is **RAM-only** (modules in `/tmp`, ConfigFS volatile, IP runtime); a
+reboot wipes it. For the permanent install, see §6.1.
+
+### 6.1 Boot persistence + DHCP (the production setup) — PROVEN by reboot
+The gadget is wired into the DustBuilder boot hook so it comes up automatically every boot, and a
+dnsmasq makes the companion plug-and-play:
+
+- **Persistent files on `/data`** (writable; survives reboot): `/data/usb-gadget/{u_ether,usb_f_ecm,
+  usb_f_ncm}.ko` + `usb_ecm_gadget.sh` + `usb_ncm_gadget.sh`.
+- **`/data/_root_postboot.sh`** (the late boot hook; no systemd — busybox `init` → `rc.sysinit` →
+  `/data/_root*.sh`) brings up the ECM gadget with `MODDIR=/data/usb-gadget`, then starts a dnsmasq
+  bound **only** to `usb0`:
+  ```sh
+  dnsmasq --conf-file=/dev/null --user=root --port=0 --interface=usb0 --bind-interfaces \
+          --except-interface=lo --dhcp-authoritative \
+          --dhcp-range=192.168.10.2,192.168.10.2,255.255.255.0 \
+          --dhcp-leasefile=/tmp/dnsmasq-usb0.leases --pid-file=/tmp/dnsmasq-usb0.pid
+  ```
+  `--user=root` is required (no `nobody` user on busybox); `--port=0` = DHCP only (no DNS);
+  `--bind-interfaces --interface=usb0` keeps it isolated from the WiFi-AP dnsmasq.
+- **Reboot-verified (2026-06):** cold boot → in ~44 s `ecm.usb0` bound, `usb0`=192.168.10.1, dnsmasq
+  serving; host got `192.168.10.2` via NM's default DHCP, ping 0.5 ms, no static config. The gadget
+  block is defensive (`|| true`) so a failure can't abort the rest of postboot.
+- **Caveat:** WiFi **AP mode** runs `killall -9 dnsmasq` (in `/usr/bin/wifi_start.sh`), which also
+  kills this `usb0` instance — only matters if you enter AP/pairing mode.
 
 ---
 
@@ -263,16 +287,21 @@ needed if running the robot off USB instead of its battery. Leave it open for no
 > was a bad inference — see the host-side gotcha below for the actual cause. There is no software
 > VBUS override on this firmware (no `vbus` param / force interface), but none is needed.
 
-### Host-side gotchas (Linux host / Q6A) — *this* is the real reliability item
-- **NetworkManager is what caused every "dropout."** It grabs the gadget interface and **flushes
-  the static IP/ARP** (on each gadget re-enumeration, and on its own DHCP attempts), so the link
-  goes dead while the robot still reads `configured` and the host `carrier=1`. **Fix:**
-  `sudo nmcli device set <if> managed no` — after that the link is stable (proven). This is the
-  single most important host step.
-- **Static ARP** both ends (NCM/ECM are unreliable at broadcast/ARP):
-  `sudo ip neigh replace 192.168.10.1 lladdr 46:bb:2c:4c:0d:4b dev <if>` (host) + `arp -s` (robot).
-- A static IP that survives reboots: a systemd-networkd `.network` (or NM keyfile with
-  `autoconnect`) for `enxd67ffa3a49bd` is cleaner than re-running `ip addr add` by hand.
+### Host side — plug-and-play via DHCP (zero config; no per-boot sudo)
+The robot runs a dnsmasq on `usb0` (see §6.1), so the host just needs its gadget interface under
+**NetworkManager's default (managed) control** — then NM's built-in DHCP gets `192.168.10.2`
+automatically on every plug-in/boot. **No static IP, no static ARP, no per-boot command.** On a
+fresh Q6A this is automatic out of the box. **Verified:** robot lease file shows
+`d6:7f:fa:3a:49:bd 192.168.10.2 <hostname>`, ping 0.5 ms with **no static ARP** — ECM resolves
+ARP normally (the static-ARP workaround was **NCM-specific**; ECM doesn't need it).
+
+Caveats / history:
+- The earlier "dropouts" were **NetworkManager flushing a *manually-set static* IP** — an artifact
+  of the pre-DHCP static approach. With DHCP, NM *is* the mechanism, so there's nothing to fight.
+  (If you ever go back to static on a host, you'd `nmcli device set <if> managed no` + set it by
+  hand — but with the robot serving DHCP there's no reason to.)
+- If a host was previously forced to `managed no` for static testing, undo it **once** (not per
+  boot): `sudo nmcli device set <if> managed yes`. NM then saves an autoconnect DHCP profile.
 - *(NCM only)* host `cdc_ncm` `rx_max`/`tx_max` default 16384, clamped to the device NTB; only
   relevant if experimenting with larger NTB. (ECM has no such knobs.)
 
@@ -282,8 +311,9 @@ USB"** port → host (the device-mode lines), **not** the gold "USB OTG" USB-A (
 for plugging devices *into* the robot). USB 2.0 high-speed (480) negotiated; practical bus
 ceiling ~280 Mbit/s — but we never get near it because the UDC caps first.
 
-### Static addressing
-Robot `usb0` = `192.168.10.1/24`; host = `192.168.10.2/24`.
+### Addressing
+Robot `usb0` = static `192.168.10.1/24` (server). Host = `192.168.10.2/24` via **DHCP** from the
+robot's `usb0` dnsmasq (§6.1). No static host config needed.
 
 ---
 
@@ -292,10 +322,12 @@ Robot `usb0` = `192.168.10.1/24`; host = `192.168.10.2/24`.
 1. Recreate `kernel/build/` per §3 (kernel tarball, Bootlin toolchain).
 2. Build per §4; verify vermagic + BSP-field presence.
 3. `cp` the three `.ko` to `kernel/modules/`, refresh `SHA256SUMS`.
-4. Push to robot `/tmp` per §6.
-5. Run `scripts/robot/usb_ecm_gadget.sh` on the robot (or `usb_ncm_gadget.sh` for NCM).
-6. Plug the adapter's **micro-USB (FEL)** → host (VBUS jumper can stay open).
-7. Host: **`nmcli device set <if> managed no`** (critical), set `192.168.10.2/24` + static ARP, `ping 192.168.10.1`.
-8. Expect ~11–12 MB/s; latency ~0.5 ms (ECM) / ~2.7 ms (NCM).
+4. **Permanent install:** copy the three `.ko` + both scripts to `/data/usb-gadget/`, and the
+   updated `_root_postboot.sh` to `/data/` (§6.1). Reboot — gadget + `usb0` dnsmasq auto-start.
+   *(Or, for a one-off RAM-only test: push to `/tmp` per §6 and run `usb_ecm_gadget.sh`.)*
+5. Plug the adapter's **micro-USB (FEL)** → host (VBUS jumper can stay open).
+6. Host: leave the interface under **NetworkManager (managed, default)** → it DHCPs `192.168.10.2`
+   automatically. `ping 192.168.10.1`. (No static IP, no static ARP, no per-boot command.)
+7. Expect ~11–12 MB/s; latency ~0.5 ms (ECM) / ~2.7 ms (NCM).
 
 Related: `docs/hardware.md` (board/USB overview), memory `usb-gadget-ethernet-abi-fix`.
