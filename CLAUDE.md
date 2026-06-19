@@ -129,9 +129,11 @@ Ubuntu chroot (idle, available)             inference_node (YOLOv8, NPU)
 | Stream | Source | Protocol | Destination |
 |--------|--------|----------|-------------|
 | Camera | `/dev/video0` V4L2 | GStreamer UDP H.264 | Dragon Q6A camera_node |
-| Map | Valetudo **REST** `/state/map` | `valetudo_bridge.py` (chroot ROS) | `/map` (OccupancyGrid) ✅ |
-| Robot pose | Valetudo REST `robot_position` | `valetudo_bridge.py` | `/odom` + `map→base_link` TF ✅ |
-| Status/battery | Valetudo REST/SSE | `valetudo_bridge.py` | `/robot/status` ✅ |
+| Map | Valetudo REST seed + **map SSE** | `valetudo_bridge.py` (chroot ROS) | `/map` OccupancyGrid (latched) ✅ |
+| Robot pose | Valetudo SSE `robot_position` | `valetudo_bridge.py` (2 Hz heartbeat) | `/odom` + `map→base_link` TF ✅ |
+| Status | Valetudo attributes SSE | `valetudo_bridge.py` | `/robot/status` ✅ |
+
+(Bridge is broker-free + SSE-driven, no polling — full details, QoS, frames, cross-host DDS plan in `docs/ros.md`.)
 | Nav commands | Dragon Q6A Nav2 | Valetudo REST API | AVA motors via Valetudo |
 | Audio | Dragon Q6A TTS | TCP socket (WAV) | aplay on robot speaker |
 
@@ -624,6 +626,9 @@ docs/
   hardware.md              wiring, power, physical setup
   wifi-hack.md             detailed explanation of the wpa_supplicant fix
   sensors.md               sensors & data access (LiDAR, camera, IMU, mic) + how to read each
+  ros.md                   ROS 2 integration: Valetudo bridge topics/QoS/frames, chroot ROS,
+                           cross-host DDS to the Q6A, parked IMU, roadmap
+  device-test-checklist.md manual smoke test after shim/stream/bridge changes
 ```
 
 **Important**: `scripts/robot/_root.sh` contains the WiFi PSK for the 4K network (2.4GHz home). Do not replace with placeholder values when deploying — this breaks WiFi connectivity.

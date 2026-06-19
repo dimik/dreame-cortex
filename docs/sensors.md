@@ -23,8 +23,9 @@ The **two holes** in the turret are the laser **emitter (TX)** window and the **
 (RX)** lens — standard triangulation-LiDAR layout (project a dot, read its offset reflection,
 distance = triangulation).
 
-Read path for the rover: AVA owns ttyS3 for SLAM, so consume the processed scan/map/pose via
-the **Valetudo MQTT bridge** (`/scan`, `/map`, `/odom`) rather than tapping the raw serial.
+Read path for the rover: AVA owns ttyS3 for SLAM, so consume the processed map/pose via the
+**Valetudo→ROS bridge** (REST/SSE, broker-free — `/map`, `/odom`; see `docs/ros.md`) rather than
+tapping the raw serial. (Valetudo doesn't expose a raw `/scan`; that's still TBD.)
 
 ---
 
@@ -226,8 +227,9 @@ frames on ttyS4 fd 24 and they decode perfectly (IMU `accel_z=1.000g`, odom x/y/
 alufers formats). An LD_PRELOAD read-tap (`scripts/robot/mcutap.c`) was built to forward them, but
 **interposing `read()` destabilises AVA's startup** (it wouldn't relaunch) — unlike write/mmap/
 ioctl/openat (fanoff, camsiphon), which are fine; `read()` is AVA's hot, threaded, real-time MCU
-path. So raw IMU/currents/triggers over ttyS4 are **deferred**. For ROS v1, ship **odometry + pose
-+ LiDAR scan via Valetudo MQTT** (already exposed) → a bridge node. Revisit the raw tap later with an
+path. So raw IMU/currents/triggers over ttyS4 are **deferred**. For ROS v1, ship **map + pose via
+Valetudo's REST/SSE API** → the bridge (`scripts/robot/valetudo_bridge.py`, see `docs/ros.md`).
+Revisit the raw tap later with an
 AVA-safe mechanism (open question: does a no-op `read()` interposer alone break AVA? if not, an
 fd-specific tap + shm tee folded into camsiphon). `mcutap.c` is kept as the working tap reference.
 
@@ -235,7 +237,7 @@ fd-specific tap + shm tee folded into camsiphon). `mcutap.c` is kept as the work
 
 ## Recommended data plumbing for the rover (Radxa Q6A)
 
-- **LiDAR scan + map + pose** → Valetudo **MQTT** → ROS `/scan`, `/map`, `/odom`.
+- **Map + pose** → Valetudo **REST/SSE** → `valetudo_bridge.py` → ROS `/map`, `/odom` + TF (live; `docs/ros.md`). Raw `/scan` not exposed by Valetudo — TBD.
 - **Camera** → **DONE**: camsiphon (read-only `/dev/video2` tap) → camstream (cedar HW-JPEG, MJPEG
   :8090) → go2rtc (H.264 RTSP `:8554` / WebRTC `:1984`). See the camera-stream sections above.
   (The old "wire a `/dev/video0` stream via media-ctl+gst" idea is a **dead end** — reconfiguring
