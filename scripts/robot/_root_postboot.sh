@@ -92,6 +92,15 @@ logger -t postboot "starting Valetudo"
     sleep 5
 done) &
 
+# --- Valetudo -> ROS 2 bridge (map / odom / pose / status; no MQTT broker) ---
+# Publishes /map (OccupancyGrid), /odom + map->base_link TF, /robot/status from Valetudo's HTTP
+# API into the chroot's ROS 2 Jazzy. Retries until Valetudo's API is up. See valetudo_bridge.py.
+if [ -f $CHROOT/opt/valetudo_bridge.py ]; then
+    setsid chroot $CHROOT bash -lc 'source /opt/ros/jazzy/setup.bash; exec python3 /opt/valetudo_bridge.py' > /tmp/vbridge.log 2>&1 </dev/null &
+    echo "valetudo_bridge (ROS) started"
+    logger -t postboot "valetudo_bridge (ROS) started"
+fi
+
 # LiDAR gate for the fanoff shim. The shim (preloaded onto AVA in _root.sh) always filters the
 # vacuum fan; this daemon allows the LiDAR turret to run in active non-manual modes and blocks
 # it during manual navigation (creates/removes /tmp/lidar_allow from Valetudo status). The fan

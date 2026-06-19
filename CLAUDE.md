@@ -129,8 +129,9 @@ Ubuntu chroot (idle, available)             inference_node (YOLOv8, NPU)
 | Stream | Source | Protocol | Destination |
 |--------|--------|----------|-------------|
 | Camera | `/dev/video0` V4L2 | GStreamer UDP H.264 | Dragon Q6A camera_node |
-| LiDAR/map | Valetudo MQTT | MQTT → ROS bridge | `/scan`, `/map` topics |
-| Robot pose | Valetudo MQTT | MQTT → ROS bridge | `/odom` topic |
+| Map | Valetudo **REST** `/state/map` | `valetudo_bridge.py` (chroot ROS) | `/map` (OccupancyGrid) ✅ |
+| Robot pose | Valetudo REST `robot_position` | `valetudo_bridge.py` | `/odom` + `map→base_link` TF ✅ |
+| Status/battery | Valetudo REST/SSE | `valetudo_bridge.py` | `/robot/status` ✅ |
 | Nav commands | Dragon Q6A Nav2 | Valetudo REST API | AVA motors via Valetudo |
 | Audio | Dragon Q6A TTS | TCP socket (WAV) | aplay on robot speaker |
 
@@ -600,6 +601,9 @@ scripts/
     dreame-wifi-setup.sh   e2e script: connect AP → deploy → reconnect 5K
     fanoff_shim.c          LD_PRELOAD shim: fan off always + LiDAR off when blocked (freestanding)
     fanoff_flag.sh         event-driven (Valetudo SSE) LiDAR gate: /tmp/lidar_allow in non-manual modes
+    valetudo_bridge.py     Valetudo REST -> ROS 2: /map (OccupancyGrid), /odom + TF, /robot/status
+    valetudo_bridge.sh     robot-side launcher: start/stop/status the ROS bridge (chroot ROS 2 Jazzy)
+    mcutap.c               PARKED MCU ttyS4 read-tap (validated; read() interposition breaks AVA)
     build_ava_shims.sh     compile fanoff + camsiphon .so + camstream in chroot, glibc-2.23-safe
     capture_cleanset.sh    capture MCU 3c..3e frames across fan states
     deploy_ava_shims.sh    bind-mount patched ava.sh exporting the LD_PRELOAD shim list, restart + verify
