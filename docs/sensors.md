@@ -221,6 +221,16 @@ calibration pass, but structure + values are confirmed sane.)
 
 IMU/compass ICs per the Z10 reference (D10s may differ): gyro XV7001, IMU BMI055, compass QMCX983.
 
+**MCU read-tap status (2026-06-19): validated but PARKED.** strace confirmed AVA reads Status
+frames on ttyS4 fd 24 and they decode perfectly (IMU `accel_z=1.000g`, odom x/y/yaw, match the
+alufers formats). An LD_PRELOAD read-tap (`scripts/robot/mcutap.c`) was built to forward them, but
+**interposing `read()` destabilises AVA's startup** (it wouldn't relaunch) — unlike write/mmap/
+ioctl/openat (fanoff, camsiphon), which are fine; `read()` is AVA's hot, threaded, real-time MCU
+path. So raw IMU/currents/triggers over ttyS4 are **deferred**. For ROS v1, ship **odometry + pose
++ LiDAR scan via Valetudo MQTT** (already exposed) → a bridge node. Revisit the raw tap later with an
+AVA-safe mechanism (open question: does a no-op `read()` interposer alone break AVA? if not, an
+fd-specific tap + shm tee folded into camsiphon). `mcutap.c` is kept as the working tap reference.
+
 ---
 
 ## Recommended data plumbing for the rover (Radxa Q6A)
