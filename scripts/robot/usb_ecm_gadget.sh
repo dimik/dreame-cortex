@@ -16,7 +16,7 @@
 #         usb_ecm_gadget.sh down     # tear down (proper configfs order)
 set -e
 
-MODDIR=/tmp
+MODDIR=${MODDIR:-/tmp}      # override to /data/usb-gadget for boot-persistent load
 G=/sys/kernel/config/usb_gadget/ecm
 DEV_MAC=46:bb:2c:4c:0d:4b      # robot-side usb0 MAC
 HOST_MAC=d6:7f:fa:3a:49:bd     # host-side iface MAC (-> enx<HOST_MAC> on the host)

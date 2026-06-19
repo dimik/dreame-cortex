@@ -42,6 +42,31 @@ else
 fi
 echo "IP after WiFi setup: $(ip addr show wlan0 2>/dev/null | grep 'inet ' | awk '{print $2}')"
 
+# --- USB gadget-Ethernet (CDC-ECM) + DHCP for the companion (Q6A) on usb0 ---
+# Brings up the BSP-ABI ethernet gadget on the OTG port (robot=192.168.10.1) and runs a dnsmasq
+# bound ONLY to usb0 so the companion is plug-and-play (DHCP, gets 192.168.10.2). Modules + script
+# live on /data (persistent). All defensive: failures here must not abort the rest of postboot.
+# See docs/usb-gadget.md.  Caveat: WiFi AP mode does `killall -9 dnsmasq` (kills this too).
+GDIR=/data/usb-gadget
+if [ -f "$GDIR/usb_ecm_gadget.sh" ] && [ -f "$GDIR/usb_f_ecm.ko" ]; then
+    echo "bringing up USB-ECM gadget..."
+    MODDIR="$GDIR" sh "$GDIR/usb_ecm_gadget.sh" > /tmp/usb_gadget.log 2>&1 || echo "usb gadget setup returned nonzero (see /tmp/usb_gadget.log)"
+    if [ -e /sys/class/net/usb0 ]; then
+        [ -f /tmp/dnsmasq-usb0.pid ] && kill "$(cat /tmp/dnsmasq-usb0.pid)" 2>/dev/null
+        dnsmasq --conf-file=/dev/null --user=root --port=0 --interface=usb0 --bind-interfaces \
+                --except-interface=lo --dhcp-authoritative \
+                --dhcp-range=192.168.10.2,192.168.10.2,255.255.255.0 \
+                --dhcp-leasefile=/tmp/dnsmasq-usb0.leases --pid-file=/tmp/dnsmasq-usb0.pid \
+            && echo "usb0 dnsmasq (DHCP for companion) started" \
+            || echo "usb0 dnsmasq failed to start"
+        logger -t postboot "usb0 gadget + dnsmasq up"
+    else
+        echo "usb0 not present after gadget setup — skipping dnsmasq"
+    fi
+else
+    echo "USB gadget not staged in $GDIR — skipping"
+fi
+
 # --- Ubuntu chroot mounts ---
 echo "mounting chroot filesystems..."
 logger -t postboot "mounting chroot filesystems"
