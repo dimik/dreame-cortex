@@ -13,7 +13,7 @@ Turn a Dreame D10s Pro robot vacuum into an open AI platform:
 ## Hardware
 
 ### Robot — Dreame D10s Pro (model r2250)
-- SoC: AllWinner MR813, quad-core Cortex-A7 @ 1.2GHz, aarch64
+- SoC: AllWinner MR813 = platform **`sun50iw10`** (A100/A133 class), quad-core **Cortex-A53** (`0xd03`), aarch64. Kernel **4.9.191** `#3 SMP PREEMPT` (built with gcc 6.4.1; `MODVERSIONS=n`)
 - WiFi: Realtek 8189fs — **2.4GHz only, single radio** (cannot do AP + STA on different channels simultaneously)
 - LiDAR (LDS turret): on `/dev/ttyS3` @ 230400 — read by AVA; tapped read-only via `libserialtap.so` →
   `/scan` (LDS protocol fully decoded — see `docs/sensors.md`). MCU (motors/IMU/odom) is on `/dev/ttyS4`.
@@ -43,23 +43,21 @@ gadget serial `athena`, used for rooting/flashing). The SoC's 2nd USB controller
 stub with empty gpio), `/sys/kernel/debug/usb/devices` shows only the two root hubs, and nothing
 enumerates. Community rooting hardware also exposes a single OTG header. So **there is no spare USB
 host port** for a USB-Ethernet adapter (earlier docs wrongly assumed one). Robot↔Q6A link options:
-- **USB gadget-Ethernet (preferred wired, but NEEDS A KERNEL MODULE):** robot OTG in *device* mode →
-  USB NIC to the Q6A (USB host), one cable on the existing OTG port. **Blocked on the stock kernel:**
-  the gadget *core* is built-in (`CONFIG_USB_GADGET/LIBCOMPOSITE/CONFIGFS=y`, `USB_SUNXI_UDC0=y`, UDC
-  `5100000.udc-controller` free) but **no ethernet function is compiled** (`CONFIG_USB_CONFIGFS_ECM/
-  RNDIS/NCM/EEM` all `=n`, no `g_ether`/`usb_f_ecm.ko`), and there are no host-side USB-net drivers
-  either (`usbnet`/`cdc_ether`/`r8152` absent). To enable: build a NIC gadget function as a module vs
-  the r2250 kernel source (Allwinner Tina 4.9.191) + the saved `kernel/config-4.9.191.txt` and `insmod`
-  (`MODVERSIONS=n` → only vermagic `4.9.191 SMP preempt mod_unload aarch64` must match; no symvers).
-  Then robot `192.168.10.1` / Q6A `192.168.10.2`.
-  - **Build NCM, not ECM:** ECM = one frame/USB-transfer (~20–40 MB/s); **CDC-NCM** (`usb_f_ncm` +
-    `CONFIG_USB_CONFIGFS_NCM`) aggregates → ~35–45 MB/s, near the bus ceiling. The hard limit is the
-    bus: robot OTG is **USB 2.0** (~40–45 MB/s real; no USB 3). Compressed ROS+camera load is well
-    under even ECM, so the link rarely bottlenecks; NCM is for headroom/raw streams.
-  - **Gadget path VERIFIED (2026-06-19):** a `mass_storage` configfs gadget binds to the UDC cleanly
-    (configfs + libcomposite + SUNXI UDC all work) — the OTG-device mechanism is proven; the NIC
-    function module is the only missing piece. FunctionFS (`F_FS=y`) is a no-kernel-build fallback
-    (userspace raw-bulk tunnel, ~45 MB/s, custom non-NIC transport).
+- **USB gadget-Ethernet (preferred wired) — WORKING (2026-06).** Robot OTG in *device* mode → CDC-NCM
+  NIC to the Q6A (USB host), one cable on the OTG port. The gadget *core* is built-in
+  (`USB_GADGET/LIBCOMPOSITE/CONFIGFS=y`, `USB_SUNXI_UDC0=y`, UDC `5100000.udc-controller`) but no
+  ethernet *function* ships, so `u_ether`/`usb_f_ncm`/`usb_f_ecm` are built out-of-tree
+  (`kernel/modules/`, committed). ⚠️ **Must be built against the Allwinner sun50iw10 BSP struct ABI,
+  NOT mainline** (BSP adds `dma_flag` to `struct usb_request` + `*f` to `usb_function_instance`; a
+  mainline build insmods but **crashes at UDC bind** — function-independent, so ECM crashes the same).
+  Fix = mainline 4.9.191 + BSP deltas, `KCFLAGS=-DCONFIG_USB_SUNXI_UDC0=1`; deltas from GitHub
+  `HandsomeMod/linux-allwinner-4.9`. **PROVEN end-to-end:** binds, `usb0`=192.168.10.1 / host
+  192.168.10.2, ping 2.7 ms, >1 GB at 0 errors. **Throughput ~11–12 MB/s — a hard `sw_udc` DMA
+  ceiling, NOT the bus or framing** (64K NTB no gain, parallel no headroom, CPU idle); so USB-2.0's
+  ~280 Mbit/s is never reached and **ECM won't beat NCM**. Fine for H.264/compressed video + ROS
+  topics, not raw streams. Needs the dontvacuum adapter's **"Micro USB VBUS" jumper bridged solidly**.
+  Load: `scripts/robot/usb_ncm_gadget.sh`. **Full reproducible build/deploy/findings:
+  `docs/usb-gadget.md`.** FunctionFS (`F_FS=y`) is a no-kernel-build userspace fallback.
 - **WiFi (simplest, works today, no kernel work):** both on the LAN; Q6A → robot at `192.168.1.213`.
 - OTG→host (ID-grounded adapter) + a USB-Ethernet/BT dongle is possible too, but occupies the debug
   port and VBUS drive there is unverified.
