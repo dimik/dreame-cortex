@@ -28,8 +28,8 @@ Plus, from *separate* pipelines on the same shim (`libserialtap.so` → tmpfs sh
 - **`/imu/data`** + **`/odom/wheel`** via `mcu_node.py` — only when the robot is active (the MCU emits
   IMU only during motion). See "raw IMU" below + `docs/sensors.md`.
 
-And **`/robot/speak`** (`std_msgs/String`, subscribed by `audio_bridge.py`) — play an `.ogg` on the
-speaker via Dreame's mediad. See `docs/audio.md`.
+And **`/robot/speak`** (`std_msgs/String`, subscribed by `audio_bridge.py`) — **speak text** (on-robot
+espeak-ng TTS), or play an `.ogg` path, on the speaker via Dreame's mediad. See `docs/audio.md`.
 
 The **`/battery`** charging status comes from AVA's `charge_state`, not Valetudo's flag (which is stuck
 `none` on the D10S Pro — a Valetudo mapping gap; see `docs/sensors.md` Battery / charging).

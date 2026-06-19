@@ -42,22 +42,41 @@ chroot /data/chroot /opt/ffmpeg -f lavfi -i "sine=frequency=660:duration=1.5" -a
 oggenc -Q /tmp/t.wav -o /tmp/t.ogg && mda_cli "single,/tmp/t,70"
 ```
 
-## ROS integration — `audio_bridge.py`
+## ROS integration — `audio_bridge.py` (text→speech + files)
 
 `scripts/robot/audio_bridge.py` (chroot ROS, started by `_root_postboot.sh`) subscribes
-**`/robot/speak`** (`std_msgs/String`):
-- a readable `.ogg` path → plays it (sends `single,<path-no-ext>,<vol>` to `mediad:10100`)
-- `"stop"` → `killall ogg123`
+**`/robot/speak`** (`std_msgs/String`); the message is one of:
+- **text** → spoken via on-robot TTS (espeak-ng) — `"robot, say X"` in one line
+- a readable **`.ogg` path** → played as-is
+- **`"stop"`** → `killall ogg123`
 
 ```sh
-ros2 topic pub --once /robot/speak std_msgs/msg/String "{data: /tmp/hello.ogg}"
+ros2 topic pub --once /robot/speak std_msgs/msg/String "{data: 'Docking complete'}"     # speaks it
+ros2 topic pub --once /robot/speak std_msgs/msg/String "{data: /tmp/hello.ogg}"          # plays file
 ```
-Volume is the `volume` param (default 70).
+Params: `volume` (90), `voice` (`en-us+f3`), `speed` (155 wpm), `amplitude` (0–200).
 
-## TTS — do it on the companion, not the robot
+## On-robot TTS — espeak-ng
 
-The Allwinner A7 is too weak for good TTS; synthesize on the Q6A and ship a small OGG over.
-`companion/tts_speak.sh`:
+Installed in the chroot (reproducible):
+```sh
+chroot /data/chroot apt-get -o APT::Sandbox::User=root install -y --no-install-recommends espeak-ng
+```
+The bridge runs `espeak-ng -v <voice> -w x.wav <text>` → `/opt/ffmpeg -c:a libvorbis x.ogg` → mediad
+(both self-contained in the chroot; the chroot ffmpeg has libvorbis). espeak-ng is **robotic formant
+synthesis** but instant and tiny.
+
+**Choose a voice** — set the `voice` param to any espeak-ng variant (sampler heard: `en-us`,
+`en-us+f3`, `en-us+f5`, `en-us+m3`, `en-us+m7`, `en-gb`, `en-us+whisper`; full list:
+`espeak-ng --voices`):
+```sh
+ros2 param set /audio_bridge voice en-gb        # or bake the default into audio_bridge.py
+```
+
+## Natural voices (optional upgrade) — do TTS on the companion
+
+For natural (neural) speech, synthesize on the Q6A (the A7 is too weak for Piper-quality at speed)
+and ship the OGG over. `companion/tts_speak.sh`:
 ```sh
 ./tts_speak.sh "Docking started" [robot-host]
 # Piper (preferred) or espeak-ng -> WAV -> oggenc -> scp robot:/tmp -> trigger /robot/speak (or mda_cli)
