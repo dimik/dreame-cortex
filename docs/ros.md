@@ -102,9 +102,10 @@ zero-AVA-risk fallback.
 
 `libserialtap.so` also tees AVA's MCU stream on `/dev/ttyS4` (`3c…3e` frames, Modbus-CRC) into
 `/tmp/mcu_ring.buf`; **`scripts/robot/mcu_node.py`** decodes it and publishes:
-- **`/imu/data`** (`sensor_msgs/Imu`) — BMI-class gyro + accel (`imu_type=2`). Orientation left unknown
-  (no magnetometer; covariance[0]=-1); angular_velocity + linear_acceleration for EKF fusion. Gyro
-  bias auto-calibrated at startup (assumes still/docked). ~35 Hz idle (MCU throttles Status10ms).
+- **`/imu/data`** (`sensor_msgs/Imu`) — gyro + accel (`imu_type=2`). Orientation left unknown (no
+  magnetometer; covariance[0]=-1); angular_velocity + linear_acceleration for EKF fusion. Gyro bias
+  is **adaptive** (auto-set whenever the robot is detected still). **Publishes only when the robot is
+  ACTIVE** — the D10s MCU emits the IMU stream (Status10ms) only during motion, not when docked/idle.
 - **`/odom/wheel`** (`nav_msgs/Odometry`) — raw wheel dead-reckoning (separate from the bridge's
   SLAM `/odom`; for `robot_localization` EKF, not direct nav).
 

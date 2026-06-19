@@ -282,8 +282,11 @@ to mg/centideg), so the Z10's `/1000`,`/100` are wrong here:
 - **gyro = raw/65.536 °/s** (±500°/s) — confirmed by two spin cross-checks (`spin_calib.py`):
   `gyro_z` integral vs wheel-odom yaw gave 0.01526 / 0.01527 °/s·LSB in both rotation directions.
 
-Status10ms (IMU) is throttled to ~22 Hz when idle/docked (ramps up when active). `mcu_node` params
-`gyro_scale`/`accel_scale` allow re-tuning without a rebuild.
+**Status10ms (IMU, 0x02) is emitted ONLY when the robot is ACTIVE** (moving/cleaning) — when
+docked/idle the MCU sends only wheel odom (0x01), no IMU at all. So `/imu/data` publishes only during
+activity, and a "hold still at startup" bias calibration can't work; `mcu_node` instead uses
+**adaptive bias** (updates only while it detects the robot still, publishes always). `mcu_node` params
+`gyro_scale`/`accel_scale`/`still_thresh_dps` allow re-tuning without a rebuild.
 
 ---
 

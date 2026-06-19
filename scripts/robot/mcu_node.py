@@ -57,9 +57,14 @@ class McuNode(Node):
         self.declare_parameter('imu_frame', 'imu_link')
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_frame', 'base_link')
-        # MCU throttles Status10ms to ~22 Hz when idle/docked (ramps toward 100 Hz when active), so
-        # keep the bias sample count modest or startup calibration drags. 64 ≈ 3 s at idle rate.
-        self.declare_parameter('calib_samples', 64)
+        # ⚠️ The D10s emits the IMU stream (Status10ms / 0x02) ONLY WHEN ACTIVE (moving / cleaning) —
+        # NOT when docked or idle (only wheel odom 0x01 flows then). So /imu/data only publishes during
+        # activity, and a "hold still at startup" bias calibration can't work (no data when docked, and
+        # data only arrives once moving). Instead: ADAPTIVE bias — update the gyro bias only while the
+        # robot is detected still (|gyro-bias| below a threshold across a window), and publish always.
+        # On the brief still moment when the IMU wakes (before the robot drives), bias self-calibrates.
+        self.declare_parameter('still_window', 40)       # samples for the still detector
+        self.declare_parameter('still_thresh_dps', 1.5)  # |gyro| below this (°/s) = "still"
         # The D10s does NOT match the Z10 scalings — the Z10 firmware pre-scaled (mg, centideg/s);
         # the D10s passes RAW sensor LSB. Both CONFIRMED empirically on the D10s (imu_type=2):
         #   accel: |accel| at rest = 16384 raw => 1g = 16384 LSB (±2g 16-bit) => accel_scale = 1/16384
@@ -71,7 +76,8 @@ class McuNode(Node):
         self.imu_frame = self.get_parameter('imu_frame').value
         self.odom_frame = self.get_parameter('odom_frame').value
         self.base_frame = self.get_parameter('base_frame').value
-        self.calib_n = int(self.get_parameter('calib_samples').value)
+        self.still_window = int(self.get_parameter('still_window').value)
+        self.still_thresh = self.get_parameter('still_thresh_dps').value
         self.gscale = self.get_parameter('gyro_scale').value
         self.ascale = self.get_parameter('accel_scale').value
 
@@ -82,13 +88,14 @@ class McuNode(Node):
         self.read_pos = 0
         self.buf = bytearray()
         self.bias = [0.0, 0.0, 0.0]
-        self.calib = []          # collected gyro samples until len == calib_n
-        self.calibrated = False
+        self.bias_set = False
+        self.recent = []         # rolling recent gyro samples for the still-detector
         # dedicated reader thread (an rclpy timer gets starved and drops frames) — drains the ring
         # in a tight loop and publishes; rclpy.spin() just keeps the node alive. Same pattern as
         # valetudo_bridge.py. Publishing from this thread is fine for these message rates.
         threading.Thread(target=self.reader_loop, daemon=True).start()
-        self.get_logger().info('mcu_node up; calibrating gyro bias (keep robot still)...')
+        self.get_logger().info('mcu_node up; /imu/data publishes when the robot is ACTIVE '
+                               '(D10s sends no IMU when docked/idle); gyro bias auto-set when still')
 
     def reader_loop(self):
         while not self.open_ring() and rclpy.ok():
@@ -159,13 +166,19 @@ class McuNode(Node):
             ts, gx, gy, gz, ax, ay, az, _ld, _rd = struct.unpack('<Ihhhhhhbb', payload)
             gyro = [gx * self.gscale, gy * self.gscale, gz * self.gscale]   # °/s
             acc = [ax * self.ascale, ay * self.ascale, az * self.ascale]    # g
-            if not self.calibrated:
-                self.calib.append(gyro)
-                if len(self.calib) >= self.calib_n:
-                    self.bias = [sum(c[k] for c in self.calib) / len(self.calib) for k in range(3)]
-                    self.calibrated = True
-                    self.get_logger().info(f'gyro bias = {[round(b,3) for b in self.bias]} °/s; publishing /imu/data')
-                return
+            # adaptive gyro bias: update only while the robot is detected STILL (all recent samples
+            # below the threshold vs the current bias). Self-calibrates on the still moment when the
+            # IMU wakes, and stays frozen during motion.
+            self.recent.append(gyro)
+            if len(self.recent) > self.still_window:
+                self.recent.pop(0)
+            if len(self.recent) >= self.still_window:
+                if max(max(abs(g[k] - self.bias[k]) for k in range(3)) for g in self.recent) < self.still_thresh:
+                    nb = [sum(g[k] for g in self.recent) / len(self.recent) for k in range(3)]
+                    if not self.bias_set:
+                        self.get_logger().info(f'gyro bias set = {[round(b,3) for b in nb]} °/s')
+                        self.bias_set = True
+                    self.bias = nb
             m = Imu()
             m.header.stamp = now
             m.header.frame_id = self.imu_frame
