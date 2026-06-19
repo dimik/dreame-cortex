@@ -21,6 +21,10 @@ on the Q6A.
 | TF `map`→`base_link` | tf2 | — | same pose | 2 Hz heartbeat |
 | `/robot/status` | `std_msgs/String` | default | `StatusStateAttribute` (`value/flag`) | on attr change |
 
+Plus **`/scan`** (`sensor_msgs/LaserScan`) from a *separate* pipeline — the robot's own 360° lidar via
+`libldstap.so` → tmpfs shm ring → `lds_scan_node.py`. Publishes only while the turret spins (active
+nav); zero overhead when gated off. See "Tap raw ttyS3" below + `docs/sensors.md`.
+
 **Design (why this shape):** Valetudo's map SSE is *push-on-change with no initial snapshot*, so a
 docked/just-started robot would have no map until it moved → we GET the map once to seed, then ride
 the SSE. `/odom`+TF are republished by a **2 Hz in-memory heartbeat** (cached pose, no HTTP) so they
@@ -81,15 +85,14 @@ LDS) exclusively — so there's no clean `sensor_msgs/LaserScan` source. Decide 
   go2rtc) + the **Q6A NPU** as a vision obstacle layer. Leverages what we have; zero robot risk.
 - **Real live 360° scan / own SLAM** → add a **dedicated USB lidar on the Q6A** (LD06/LD19/RPLiDAR,
   ~$70) → native LaserScan from its driver. Robust, standard; the robot's lidar stays AVA's.
-- **Tap raw ttyS3 in AVA** → **VIABLE + protocol DECODED** (2026-06-19). The earlier "read() breaks
-  AVA" wall was a bug in *our* shim, not a property of AVA: the freestanding `read()` returned the raw
-  `-errno` instead of glibc's `-1`+`errno`, so AVA's non-blocking loops choked. With the errno fix
-  (verified: AVA runs normally with an errno-correct `read()` interposer mapped in), an fd-specific
-  ttyS3 tap keyed on the LDS sync `55 aa` → shm-ring tee → LDS decoder → `sensor_msgs/LaserScan` is
-  the path to the robot's *own* 360° lidar. The **LDS frame format is now fully decoded** (40-byte
-  frame, 8 samples/frame, LE16 mm + angle/65536·360°; see `docs/sensors.md`) and validated against a
-  live capture (1188 frames → coherent room scan). Remaining: the production shim + ring + publisher.
-  Synthetic ray-cast from the map is still pointless — this gives real ranges.
+- **Tap raw ttyS3 in AVA** → **DONE — `/scan` is LIVE** (2026-06-19). The earlier "read() breaks AVA"
+  wall was a bug in *our* shim, not AVA: the freestanding `read()` returned raw `-errno` instead of
+  glibc's `-1`+`errno`, so AVA's non-blocking loops choked. Fixed with `__errno_location`. The
+  production path: `libldstap.so` (LD_PRELOAD, passive errno-correct read-tap on ttyS3, isolates the
+  fd via `/proc/self/fd`) tees into a tmpfs shm ring → `lds_scan_node.py` decodes the LDS frames →
+  `sensor_msgs/LaserScan` on `/scan`. The robot's *own* 360° lidar, no extra hardware. Boot-persistent
+  and verified across a reboot; zero overhead when the turret is gated off. See `docs/sensors.md` for
+  the frame format and `scripts/robot/{ldstap.c,lds_scan_node.py}`.
 
 **Recommendation:** ship v1 nav on `/map` + pose now; for live 360° sensing, the robot's own lidar
 via the ttyS3 tap is now the preferred path (no extra hardware) — vs. a USB lidar on the Q6A as the
@@ -112,8 +115,10 @@ Valetudo's SLAM pose (good for nav), not raw dead-reckoning, and there's no `sen
 - [ ] nav2 bringup on the Q6A consuming `/map` + TF; goals → Valetudo REST move commands
 - [ ] camera into ROS (the go2rtc RTSP/WebRTC feed → an `image` topic if wanted)
 - [ ] live obstacle sensing on the Q6A when needed: camera+NPU layer, or a dedicated USB lidar
-- [ ] raw `/scan` via ttyS3 tap + `sensor_msgs/Imu` via ttyS4 tap — **read-tap unblocked** (errno
-      fix verified); remaining: LDS frame decode + shm-ring tee (see mcutap.c / docs/sensors.md)
+- [x] raw `/scan` via ttyS3 read-tap (`libldstap.so` → shm ring → `lds_scan_node.py`) — **LIVE**,
+      boot-persistent, the robot's own 360° lidar
+- [ ] `sensor_msgs/Imu` via the ttyS4 tap — same mechanism (read-tap unblocked); mcutap needs the
+      shm-ring tee + decoder wired up (see mcutap.c / docs/sensors.md)
 
 ## Gotchas
 

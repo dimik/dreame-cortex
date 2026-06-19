@@ -12,9 +12,11 @@ Reverse-engineered 2026-06-19 from a live capture of AVA reading /dev/ttyS3 @ 23
     off  6  2   start angle   LE16, unit = 360deg/65536
     off  8  24  8 samples     each [dist:LE16 mm][quality:1]; dist==0x8000 => no return
     off 32  2   end angle     LE16, endAngle[n] ~= startAngle[n+1]
-    off 34  2   aux           (unidentified, unused)
-    off 38  1   checksum      1-byte (formula not yet cracked)
-    off 39  1   end marker    a4 (constant) -- with 55 aa, used to align
+    off 34  6   timestamp     ~40-bit monotonic counter (no checksum, no end marker)
+
+Sync is the 4-byte "55 aa 03 08" (sync + constant type). NOTE: an earlier capture made byte 39
+look like a constant 0xa4 marker -- it is NOT; that was just the timestamp's high byte at the
+time. Do not align on byte 39.
 
 Usage:
     # decode a raw byte stream (file of concatenated frames):
@@ -36,10 +38,10 @@ def le16(b, o):
 
 
 def find_frames(raw):
-    """Yield aligned 40-byte frames from a raw byte stream (resync on 55 aa .. a4)."""
+    """Yield aligned 40-byte frames from a raw byte stream (resync on 55 aa 03 08)."""
     i, n = 0, len(raw)
     while i < n - (FRAME_LEN - 1):
-        if raw[i] == 0x55 and raw[i + 1] == 0xAA and raw[i + FRAME_LEN - 1] == 0xA4:
+        if raw[i] == 0x55 and raw[i + 1] == 0xAA and raw[i + 2] == 0x03 and raw[i + 3] == 0x08:
             yield bytes(raw[i:i + FRAME_LEN])
             i += FRAME_LEN
         else:

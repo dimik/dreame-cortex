@@ -101,6 +101,17 @@ if [ -f $CHROOT/opt/valetudo_bridge.py ]; then
     logger -t postboot "valetudo_bridge (ROS) started"
 fi
 
+# --- LiDAR -> ROS /scan (libldstap shm ring -> sensor_msgs/LaserScan) ---
+# libldstap.so (preloaded onto AVA in _root.sh) tees AVA's ttyS3 reads to /tmp/lds_ring.buf;
+# this node decodes LDS frames and publishes /scan. Zero cost when the turret is gated off
+# (no ttyS3 reads -> empty ring). The /tmp bind-mount above shares the ring into the chroot.
+# See scripts/robot/lds_scan_node.py + docs/ros.md / docs/sensors.md.
+if [ -f $CHROOT/opt/lds_scan_node.py ]; then
+    setsid chroot $CHROOT bash -lc 'source /opt/ros/jazzy/setup.bash; exec python3 /opt/lds_scan_node.py' > /tmp/lds_scan.log 2>&1 </dev/null &
+    echo "lds_scan_node (ROS /scan) started"
+    logger -t postboot "lds_scan_node (ROS /scan) started"
+fi
+
 # LiDAR gate for the fanoff shim. The shim (preloaded onto AVA in _root.sh) always filters the
 # vacuum fan; this daemon allows the LiDAR turret to run in active non-manual modes and blocks
 # it during manual navigation (creates/removes /tmp/lidar_allow from Valetudo status). The fan

@@ -36,13 +36,18 @@ back-to-back, no inter-frame gap:
 | 6   | 2   | **start angle** | LE16; **unit = 360°/65536** (≈0.0055°); increments ~57/sample |
 | 8   | 24  | **8 samples** | each `[dist:LE16 mm][quality:1]`; `dist==0x8000` = no return/invalid |
 | 32  | 2   | **end angle** | LE16; `endAngle[n] ≈ startAngle[n+1]` (continuous) |
-| 34  | 2   | aux | unidentified (not needed for `/scan`) |
-| 38  | 1   | checksum | 1-byte; formula not yet cracked (simple sum/xor/CRC16 don't match) |
-| 39  | 1   | end marker `a4` | constant on every frame — use with `55 aa` to align |
+| 34  | 6   | timestamp | ~40-bit **monotonic counter** (+~251 M/frame). **No checksum, no end marker.** |
 
-8 samples span `[startAngle, endAngle]`; `angle[k] = startAngle + (endAngle-startAngle)*k/8`. Decode
-+ validation scripts live in the capture work; a 4 s capture (1188 frames, 7443 valid points,
-401–4764 mm) reconstructs a coherent top-down room scan, confirming the format.
+**Sync on the 4-byte `55 aa 03 08`** (sync + constant type). There is NO per-frame checksum and NO
+trailing marker — a short early capture made byte 39 look like a constant `0xa4`, but that was just
+the timestamp's high byte at that moment (live captures show it varying, e.g. ending `…86 08`). The
+brute-force "failure" *was* the result: `[34:39]` is strictly monotonic (1187/1187 steps), i.e. a
+counter, not a checksum. Frame integrity is the `55 aa 03 08` sync + per-sample quality bytes.
+
+8 samples span `[startAngle, endAngle]`; `angle[k] = startAngle + (endAngle-startAngle)*k/8`.
+Validated two ways: a 4 s capture (1188 frames, 7443 points) reconstructs a coherent top-down room
+scan, AND the scan cross-checks against Valetudo's SLAM walls — recovered orientation (LDS angle-0 →
+world 150°) matches the robot's heading (146°) within 4°, near-wall distances agree to ~16 mm median.
 
 ### Capturing raw LDS frames safely (no AVA restart)
 
@@ -60,10 +65,12 @@ AVA owns ttyS3 exclusively and the turret only spins during active (non-manual) 
 AVA owns ttyS3 for SLAM. Two routes to lidar data, in order of risk:
 - **Processed map/pose (live, zero risk):** the **Valetudo→ROS bridge** (REST/SSE, broker-free —
   `/map`, `/odom`; see `docs/ros.md`). Valetudo exposes **no raw `/scan`**.
-- **Raw `/scan` via passive read-tap (unblocked, not yet built):** an errno-correct `read()`
-  interposer on fd 26 keyed on the `55 aa` framing → shm-ring tee → the decoder above →
-  `sensor_msgs/LaserScan`. Read interposition is now proven AVA-safe (see the MCU read-tap status
-  below); the protocol is decoded; remaining work is the shim + ring + publisher.
+- **Raw `/scan` via passive read-tap (LIVE):** `libldstap.so` (LD_PRELOAD, errno-correct) tees AVA's
+  ttyS3 reads into a tmpfs shm ring (`/tmp/lds_ring.buf`); `lds_scan_node.py` (chroot ROS) decodes
+  and publishes `sensor_msgs/LaserScan` on `/scan`. Boot-persistent (preloaded via `_root.sh`, node
+  launched by `_root_postboot.sh`); verified across a reboot. **Zero overhead when the turret is
+  gated off** (no ttyS3 reads → empty ring). Calibration: `base_link bearing = -lds_deg + offset`
+  (handedness −1; offset ~0–5° — tune in RViz). See `ldstap.c` / `lds_scan_node.py` / `docs/ros.md`.
 
 ---
 
