@@ -24,6 +24,12 @@ Turn a Dreame D10s Pro robot vacuum into an open AI platform:
 - SSH access: `root@192.168.10.1` (USB gadget link — fastest, WiFi-independent), `root@192.168.1.213`
   (home WiFi), `root@192.168.5.1` (robot AP mode). `sshd` listens on `0.0.0.0:22`.
 - SSH key: `~/.ssh/id_rsa_dreame`. Local `~/.ssh/config` aliases: `dreame-usb`, `dreame-wifi`, `dreame` (AP).
+- **Rebooting:** `reboot` / `reboot -f` **HANG** on this robot (the kernel restart path stalls in a
+  driver `.shutdown` hook — likely the USB-gadget teardown; no power-cycle happens, just piles up
+  stuck `reboot` procs). Use the **sysrq emergency reboot**, which skips device shutdown:
+  `ssh dreame-wifi 'echo 1 > /proc/sys/kernel/sysrq; echo b > /proc/sysrq-trigger'` (hard reboot, no
+  `sync` — safe: squashfs root is RO, `/data` not mid-write at idle). Boot hook restores everything
+  (gadget, dnsmasq, ROS nodes, go2rtc) in ~45 s. Or physically power-cycle.
 
 ### Companion — Radxa Dragon Q6A
 - SoC: Qualcomm QCS6490

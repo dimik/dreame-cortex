@@ -33,6 +33,10 @@ HDR = 64
 RING = 256 * 1024
 MAGIC = 0x0031534444530001
 BINS = 360                       # 1deg output resolution (LDS native ~1140/rev)
+FAST_PERIOD = 0.02               # 50 Hz drain while data flows (lidar rev ~5 Hz; ample headroom)
+IDLE_PERIOD = 0.5                # 2 Hz when the ring is dry (turret gated off) — avoids the old
+                                 # fixed 100 Hz busy-poll that burned ~6% CPU 24/7 with no LiDAR
+IDLE_AFTER = 25                  # consecutive empty polls (~0.5 s) before backing off to idle rate
 
 
 class LdsScanNode(Node):
@@ -54,8 +58,16 @@ class LdsScanNode(Node):
         self.bins = [math.inf] * BINS
         self.prev_start = None
         self.have = False
-        self.create_timer(0.01, self.poll)   # 100 Hz drain; lidar rev ~5 Hz
+        self.empty = 0
+        self.cur_period = FAST_PERIOD
+        self.timer = self.create_timer(FAST_PERIOD, self.poll)   # adaptive: 50 Hz active / 2 Hz idle
         self.get_logger().info('lds_scan_node up; waiting for ring data (turret must be spinning)')
+
+    def _set_period(self, p):
+        if p != self.cur_period:
+            self.destroy_timer(self.timer)
+            self.timer = self.create_timer(p, self.poll)
+            self.cur_period = p
 
     def open_ring(self):
         if self.mm is not None:
@@ -99,10 +111,16 @@ class LdsScanNode(Node):
 
     def poll(self):
         if not self.open_ring():
+            self._set_period(IDLE_PERIOD)
             return
         chunk = self.drain()
         if not chunk:
+            self.empty += 1
+            if self.empty >= IDLE_AFTER:
+                self._set_period(IDLE_PERIOD)   # ring dry (LiDAR off) -> stop busy-polling
             return
+        self.empty = 0
+        self._set_period(FAST_PERIOD)           # data flowing -> drain at full rate
         self.buf += chunk
         if len(self.buf) > 4 * RING:              # safety clamp
             self.buf = self.buf[-RING:]

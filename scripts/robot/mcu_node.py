@@ -100,9 +100,15 @@ class McuNode(Node):
     def reader_loop(self):
         while not self.open_ring() and rclpy.ok():
             time.sleep(0.2)
+        idle = 0
         while rclpy.ok():
-            self.poll()
-            time.sleep(0.002)
+            got = self.poll()                       # bytes drained this pass
+            if got:
+                idle = 0
+                time.sleep(0.003)                   # ~330 Hz while data flows (keeps up with 100 Hz IMU)
+            else:
+                idle = min(idle + 1, 10)
+                time.sleep(0.005 * idle)            # ring dry -> back off to ~50 ms (was a flat 500 Hz poll)
 
     def open_ring(self):
         if self.mm is not None:
@@ -137,8 +143,9 @@ class McuNode(Node):
 
     def poll(self):
         if not self.open_ring():
-            return
-        self.buf += self.drain()
+            return 0
+        chunk = self.drain()
+        self.buf += chunk
         if len(self.buf) > 4 * RING:
             self.buf = self.buf[-RING:]
         i, n = 0, len(self.buf)
@@ -159,6 +166,7 @@ class McuNode(Node):
             else:
                 i += 1                            # corrupt frame (MCU does this) — skip a byte
         self.buf = self.buf[i:]                   # keep ONLY the unparsed remainder (no data drop)
+        return len(chunk)
 
     def dispatch(self, mtype, payload):
         now = self.get_clock().now().to_msg()
