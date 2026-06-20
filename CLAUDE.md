@@ -30,6 +30,10 @@ Turn a Dreame D10s Pro robot vacuum into an open AI platform:
   `ssh dreame-wifi 'echo 1 > /proc/sys/kernel/sysrq; echo b > /proc/sysrq-trigger'` (hard reboot, no
   `sync` — safe: squashfs root is RO, `/data` not mid-write at idle). Boot hook restores everything
   (gadget, dnsmasq, ROS nodes, go2rtc) in ~45 s. Or physically power-cycle.
+- **Battery/CPU power:** stock firmware pins all cores at 1.416GHz 24/7 (`userspace` gov) → ~6W idle,
+  ~12h from full. `_root_postboot.sh` switches the governor to **`ondemand`** (idle 408MHz, ramps to
+  1.5GHz under load) — the main battery fix (no cleaning on this unit, so pinned perf is unneeded).
+  Our `lds_scan`/`mcu` nodes are now adaptive (don't busy-poll when idle). See `docs/power.md`.
 
 ### Companion — Radxa Dragon Q6A
 - SoC: Qualcomm QCS6490

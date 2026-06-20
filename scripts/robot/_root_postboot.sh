@@ -9,6 +9,15 @@ echo "=== _root_postboot.sh start $(date) ==="
 sleep 30
 echo "30s sleep done"
 
+# --- CPU power-save: the stock firmware pins all 4 cores at 1.416GHz 24/7 (userspace governor),
+# so even sitting idle the SoC burns ~full power (battery ~12h from 100%). This unit is a rover, not
+# a vacuum (no cleaning), so AVA's pinned performance is unneeded. Switch to ondemand: the CPU idles
+# at 408MHz when still and auto-ramps to 1.5GHz under load (ROS/nav/vision). Verified AVA does not
+# re-pin it. Biggest single battery win. See docs/power.md.
+for c in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo ondemand > "$c" 2>/dev/null; done
+echo "CPU governor -> ondemand ($(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null))"
+logger -t postboot "cpu governor -> ondemand (idle downclock)"
+
 # --- AVA IoT connection ---
 echo -n "miiot" > /data/config/ava/iot.flag
 sleep 1
