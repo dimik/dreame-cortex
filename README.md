@@ -1,5 +1,7 @@
-# dreame-cortex
+# I.P.P.O.L.I.T.
+Intelligent Platform for Perception, Orientation, LLM Inference, and Tracking.
 
+This robot is built on a reverse-engineered smart vacuum chassis, with the brush and dustbin removed to function purely  as a mobile AI platform.
 Turning a Dreame robot vacuum into an AI platform — Valetudo integration, ROS 2 on companion board, computer vision, and custom navigation.
 
 ## Hardware
