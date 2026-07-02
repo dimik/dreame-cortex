@@ -1,11 +1,11 @@
 #!/bin/bash
 # Deploy Valetudo config from repo to robot and restart Valetudo.
 # Usage: ./valetudo-deploy-config.sh [robot-host]
-#   robot-host defaults to dreame-home (192.168.1.213 via ~/.ssh/config)
+#   robot-host defaults to dreame-wifi (192.168.1.213 via ~/.ssh/config)
 
 set -e
 
-ROBOT="${1:-dreame-home}"
+ROBOT="${1:-dreame-wifi}"
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CONFIG_SRC="$REPO_ROOT/robot/valetudo/valetudo.json"
 CONFIG_DST="/data/valetudo_config/valetudo.json"

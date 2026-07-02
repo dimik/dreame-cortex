@@ -5,14 +5,14 @@
 # and play it through Dreame's mediad (serialized with AVA's prompts, no ALSA contention).
 #
 #   ./tts_speak.sh "Docking started"            # uses default robot host + voice
-#   ./tts_speak.sh "Battery low" dreame-home    # explicit robot host
+#   ./tts_speak.sh "Battery low" dreame-wifi    # explicit robot host
 #
 # Pipeline:  TTS (Piper > espeak-ng fallback) -> WAV -> oggenc -> scp robot:/tmp -> trigger playback.
 # Playback trigger: prefers the ROS bridge (ros2 topic pub /robot/speak) if ROS is sourced and the
 # robot is on the DDS graph; otherwise falls back to `ssh ... mda_cli`. See docs/audio.md.
 set -e
 TEXT="$1"
-ROBOT="${2:-dreame-home}"
+ROBOT="${2:-dreame-wifi}"
 VOL="${TTS_VOL:-70}"
 [ -n "$TEXT" ] || { echo "usage: $0 \"text\" [robot_host]"; exit 1; }
 

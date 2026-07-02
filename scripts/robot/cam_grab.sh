@@ -6,7 +6,7 @@
 # /tmp/cam_frame.raw (+ /tmp/cam_fmt.txt with "WxH pf=XXXX sz=N"). Read-only; AVA is untouched.
 #
 # Pull + convert on your workstation, e.g.:
-#   ssh dreame-home 'base64 /tmp/cam_frame.raw' | base64 -d > frame.nv21
+#   ssh dreame-wifi 'base64 /tmp/cam_frame.raw' | base64 -d > frame.nv21
 #   python3 scripts/robot/nv21_to_png.py frame.nv21 672 504 frame.png
 
 rm -f /tmp/cam_frame.raw

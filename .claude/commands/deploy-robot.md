@@ -4,8 +4,8 @@ Deploy updated boot hooks and daemons from this repo to the Dreame D10s Pro.
 
 ## Pre-flight checks
 1. Confirm robot is reachable: `ping 192.168.1.213`
-2. Confirm SSH works: `ssh dreame-home 'uptime'`
-3. Confirm /data has enough space: `ssh dreame-home 'df -h /data'` — need at least 50MB free
+2. Confirm SSH works: `ssh dreame-wifi 'uptime'`
+3. Confirm /data has enough space: `ssh dreame-wifi 'df -h /data'` — need at least 50MB free
 
 ## Deploy
 
@@ -22,10 +22,10 @@ ssh root@192.168.1.213 'chmod +x /data/_root.sh /data/_root_postboot.sh /data/ch
 ```
 
 ## Verify after deploy
-- Check scripts are executable: `ssh dreame-home 'ls -la /data/_root*.sh'`
-- Validate valetudo config: `ssh dreame-home 'cat /data/valetudo_config/valetudo.json'`
-- Optionally reboot to test full boot sequence: `ssh dreame-home 'reboot'`
+- Check scripts are executable: `ssh dreame-wifi 'ls -la /data/_root*.sh'`
+- Validate valetudo config: `ssh dreame-wifi 'cat /data/valetudo_config/valetudo.json'`
+- Optionally reboot to test full boot sequence: `ssh dreame-wifi 'reboot'`
 
 ## Important
 - Never overwrite /data/_root.sh with a version missing the SSID/PSK — robot will lose WiFi on next reboot
-- If you change valetudo.json, Valetudo must be restarted: `ssh dreame-home 'killall valetudo; sleep 2; VALETUDO_CONFIG_PATH=/data/valetudo_config/valetudo.json /data/valetudo > /tmp/valetudo.log 2>&1 &'`
+- If you change valetudo.json, Valetudo must be restarted: `ssh dreame-wifi 'killall valetudo; sleep 2; VALETUDO_CONFIG_PATH=/data/valetudo_config/valetudo.json /data/valetudo > /tmp/valetudo.log 2>&1 &'`

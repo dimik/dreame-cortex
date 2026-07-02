@@ -52,7 +52,7 @@ echo 0x0104 > $G/idProduct         # Multifunction Composite Gadget
 echo 0x0100 > $G/bcdDevice
 echo 0x0200 > $G/bcdUSB
 mkdir -p $G/strings/0x409
-echo "dreame-cortex" > $G/strings/0x409/manufacturer
+echo "dreame" > $G/strings/0x409/manufacturer
 echo "robot-ecm0"    > $G/strings/0x409/product
 echo "0123456789"    > $G/strings/0x409/serialnumber
 

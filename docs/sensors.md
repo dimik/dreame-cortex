@@ -101,9 +101,9 @@ AVA continuously saves obstacle/furniture detection frames as JPEG to
 **`/data/ai_offline_collection/*.jpg`** — real OV8856 frames, **672×504, color baseline JPEG**
 (the AI-pipeline output size; sensor native is higher). Grab the latest without disturbing AVA:
 ```sh
-ssh dreame-home 'cd /data/ai_offline_collection; ls -t *.jpg | head -1'   # newest
+ssh dreame-wifi 'cd /data/ai_offline_collection; ls -t *.jpg | head -1'   # newest
 # pull (BusyBox has no sftp): base64 over ssh
-ssh dreame-home 'base64 /data/ai_offline_collection/<file>.jpg' | base64 -d > frame.jpg
+ssh dreame-wifi 'base64 /data/ai_offline_collection/<file>.jpg' | base64 -d > frame.jpg
 ```
 Sample frames pulled to `~/dreame-camera/` show the robot's low, wide-FOV view of the room.
 
@@ -232,7 +232,7 @@ high risk, ~zero reward since no chip is fitted; don't.)
 
 Everything streams from the MCU → SoC on **`/dev/ttyS4`** (`3c..3e` framed, Modbus CRC16 — see
 `../CLAUDE.md` "MCU & LDS serial protocol"). Read it read-only with `strace` on AVA, decode with
-`~/dreame_mcu_protocol/mcu_packets.py`, or forward a copy from the `fanoff_shim`. Packet set:
+`github.com/dimik/dreame_mcu_protocol/mcu_packets.py`, or forward a copy from the `fanoff_shim`. Packet set:
 
 | Packet (type) | Rate | Data |
 |---|---|---|
@@ -252,7 +252,7 @@ wheel dist delta L=0 R=0         -> not moving
 calibration pass, but structure + values are confirmed sane.)
 
 **TODO — IMU calibration constants** (before using the IMU for nav/fusion on the Q6A):
-- **Chip is a Bosch BMI055** (per `~/dreame_mcu_protocol/dreame_z10_notes.md`) — so scales come from
+- **Chip is a Bosch BMI055** (per `github.com/dimik/dreame_mcu_protocol/dreame_z10_notes.md`) — so scales come from
   its datasheet once the configured range is known; no blind solving needed.
 - **r2250 sends raw BMI055 LSB** (our `accel_z=16411 ≈ 16384 LSB/g` = ±2 g range). This **differs from
   the Z10 repo's `Status10ms` decode** (`mcu_packets.py`: `gyro /= 100` → °/s, `accel /= 1000` → g,

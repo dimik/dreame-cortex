@@ -6,8 +6,8 @@
 # constants in fanoff_shim.c (CLEANSET_CMD, FAN_OFFSET, checksum). See CLAUDE.md.
 #
 # PREREQUISITES (run first):
-#   1. scp scripts/robot/fanoff_shim.c build_ava_shims.sh   dreame-home:/data/
-#   2. ssh dreame-home 'sh /data/build_ava_shims.sh'        # builds /data/lib/libfanoff_log.so
+#   1. scp scripts/robot/fanoff_shim.c build_ava_shims.sh   dreame-wifi:/data/
+#   2. ssh dreame-wifi 'sh /data/build_ava_shims.sh'        # builds /data/lib/libfanoff_log.so
 #   3. Patched ava.sh in place exporting LD_PRELOAD=/data/lib/libfanoff_log.so (see NOTE).
 #
 # NOTE on injection: AVA is launched by /etc/rc.d/ava.sh (squashfs). To preload the LOG shim
@@ -21,7 +21,7 @@
 #    each fan-speed preset so each speed maps to a distinct byte value. Robot stays docked
 #    /stationary throughout (manual-control enable spins the fan with spdv=0).
 #
-# Usage: sh capture_cleanset.sh   (run ON the robot, or via ssh dreame-home 'sh -s' < this)
+# Usage: sh capture_cleanset.sh   (run ON the robot, or via ssh dreame-wifi 'sh -s' < this)
 
 LOG=/tmp/mcu_tx.log
 API=http://localhost/api/v2/robot/capabilities
@@ -57,7 +57,7 @@ curl -s -X PUT "$API/HighResolutionManualControlCapability" \
 
 echo
 echo "=== DONE. Pull captures to the laptop for decode: ==="
-echo "  scp dreame-home:/tmp/cap_*.bin ./captures/"
+echo "  scp dreame-wifi:/tmp/cap_*.bin ./captures/"
 echo "Decode hint: frames are separated by the 0xFF 0xFF marker the shim writes."
 echo "  xxd /tmp/cap_fanon.bin | less   # find 55 AA frames, diff fanoff vs fanon"
 echo "Look for: the CLEANSET command id (byte after 55 AA <len>), the byte that tracks"

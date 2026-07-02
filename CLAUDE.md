@@ -1,4 +1,4 @@
-# CLAUDE.md — dreame-cortex project knowledge
+# CLAUDE.md — IPPOLIT project knowledge
 
 ## Project goal
 
@@ -191,7 +191,7 @@ Connecting the laptop to the robot AP (`dreame-vacuum-r2250_miap8E6A`) drops the
 ### Ubuntu 24.04 chroot (`/data/chroot/`)
 - Full Ubuntu 24.04.4 arm64 base rootfs
 - ROS 2 Jazzy installed (but NOT used — Dragon Q6A handles all ROS)
-- Enter: `ssh dreame-home` then `sh /data/chroot.sh`
+- Enter: `ssh dreame-wifi` then `sh /data/chroot.sh`
 - apt fix required: `APT::Sandbox::User "root"` in `/etc/apt/apt.conf.d/00no-sandbox`
   (apt's `_apt` sandbox user cannot do DNS on kernel 4.9.191)
 
@@ -484,7 +484,7 @@ Note: `CleanMode` (`WritePropInt type=0`) is a property-store/behavior-tree valu
 **Deploy / persistence.**
 - `deploy_ava_shims.sh` builds a patched `ava.sh` (`export LD_PRELOAD="<shim list>"`), bind-mounts it over `/etc/rc.d/ava.sh`, restarts AVA. The LD_PRELOAD list (fanoff filter + camsiphon if present) is the shared injection MECHANISM; each shim is an independent feature.
 - `_root.sh` re-establishes that bind-mount early at boot; `_root_postboot.sh` launches the SSE gate daemon after Valetudo starts. Both persist across reboot.
-- Build with `build_ava_shims.sh` (freestanding, glibc-2.23-safe; builds fanoff + camsiphon). RE artifacts: `~/dreame-re/{mcu.bin,node_signal.so}`; protocol ref `~/dreame_mcu_protocol` (alufers).
+- Build with `build_ava_shims.sh` (freestanding, glibc-2.23-safe; builds fanoff + camsiphon). RE artifacts: `~/dreame-re/{mcu.bin,node_signal.so}`; protocol ref `github.com/dimik/dreame_mcu_protocol` (alufers fork; not kept locally — re-clone for offline decode).
 
 **Architecture (table-driven).** `fanoff_shim.c` is layered: raw syscalls → Modbus CRC16 → frame codec (3c..3e + `?` escaping) → **policy `RULES[]` table** → write/writev hooks. Each subsystem is ONE declarative rule — match `type` (+ optional first payload byte), a rewrite `action` (`REWRITE_SETCLEANING_IDLE` / `REWRITE_ZERO_BYTE`), and a `gate` (`GATE_ALWAYS` or `GATE_UNLESS_FLAG <path>`). To disable another subsystem later, add a rule — nothing else changes. (Do NOT gate the IMU — AVA needs it to drive.) The const table relocates correctly under the `-nostdlib` build (verified: AVA loads + runs).
 
@@ -571,7 +571,7 @@ Two independent serial links from the SoC (AVA):
 - **`/dev/ttyS4` — MCU** (motors: wheels, vacuum fan, brushes, pump; plus IMU/sensor telemetry). AVA opens it on a dynamic fd (observed fd 24). Per the alufers Z10 repo the MCU link is **115200**; D10s value not independently confirmed.
 - **`/dev/ttyS3` — LDS / LiDAR**, **230400**. AVA opens it (observed fd 26); read-mostly (the turret streams scans; AVA rarely writes). LDS frames are a *different* format from the MCU link (old docs mislabeled it "MCU 55 AA protocol"): a **40-byte fixed frame** `55 aa 03 08 | speed | startAngle | 8×(dist_mm,qual) | endAngle | 6-byte timestamp` — **fully decoded + validated, no checksum**. Full table + the decoder/tap in `docs/sensors.md`; published as `/scan` via `libserialtap.so` + `lds_scan_node.py`.
 
-RE'd from `github.com/alufers/dreame_mcu_protocol` (cloned `~/dreame_mcu_protocol`; written for the Z10 Pro — same protocol family as the D10s; framing/CRC/SetCleaning/_CtrlMcuCMD all re-verified on our D10s). Firmware dumped at `~/dreame-re/mcu.bin` (GD32F303-class MCU, FreeRTOS) — import to Ghidra as Raw Binary, ARM Cortex LE, base `0x08000000`. AVA-side node that builds messages: `~/dreame-re/node_signal.so`.
+RE'd from `github.com/alufers/dreame_mcu_protocol` (fork `github.com/dimik/dreame_mcu_protocol`, not kept locally; written for the Z10 Pro — same protocol family as the D10s; framing/CRC/SetCleaning/_CtrlMcuCMD all re-verified on our D10s). Firmware dumped at `~/dreame-re/mcu.bin` (GD32F303-class MCU, FreeRTOS) — import to Ghidra as Raw Binary, ARM Cortex LE, base `0x08000000`. AVA-side node that builds messages: `~/dreame-re/node_signal.so`.
 
 **MCU frame format** (ttyS4):
 ```
@@ -629,60 +629,60 @@ To modify the stream, interpose via `LD_PRELOAD` on AVA (see "Vacuum fan + LiDAR
 
 ```bash
 # SSH to robot
-ssh dreame-home          # home network (192.168.1.213) via 4K (2.4GHz)
+ssh dreame-wifi          # home network (192.168.1.213) via 4K (2.4GHz)
 ssh dreame               # robot AP mode (192.168.5.1)
 
 # Enter Ubuntu chroot on robot
-ssh dreame-home 'sh /data/chroot.sh'
+ssh dreame-wifi 'sh /data/chroot.sh'
 
 # Check Valetudo status
-ssh dreame-home 'cat /tmp/valetudo.log | tail -20'
+ssh dreame-wifi 'cat /tmp/valetudo.log | tail -20'
 
 # Check WiFi connection
-ssh dreame-home 'wpa_cli -iwlan0 status'
+ssh dreame-wifi 'wpa_cli -iwlan0 status'
 
 # View boot logs (structured now)
-ssh dreame-home 'cat /tmp/root_sh.log'      # early boot log
-ssh dreame-home 'cat /tmp/postboot.log'     # postboot sequence log
+ssh dreame-wifi 'cat /tmp/root_sh.log'      # early boot log
+ssh dreame-wifi 'cat /tmp/postboot.log'     # postboot sequence log
 
 # Check work_mode and fan speed
-ssh dreame-home 'avacmd msg_cvt '"'"'{"type":"msgCvt","cmd":"get_prop","prop":"work_mode"}'"'"''
-ssh dreame-home 'curl -s http://localhost/api/v2/robot/capabilities/FanSpeedControlCapability/preset'
+ssh dreame-wifi 'avacmd msg_cvt '"'"'{"type":"msgCvt","cmd":"get_prop","prop":"work_mode"}'"'"''
+ssh dreame-wifi 'curl -s http://localhost/api/v2/robot/capabilities/FanSpeedControlCapability/preset'
 
 # Set fan to off (Valetudo "low" = MIIO 0 = off)
-ssh dreame-home 'curl -s -X PUT http://localhost/api/v2/robot/capabilities/FanSpeedControlCapability/preset \
+ssh dreame-wifi 'curl -s -X PUT http://localhost/api/v2/robot/capabilities/FanSpeedControlCapability/preset \
   -H "Content-Type: application/json" -d '"'"'{"name":"low"}'"'"''
 
 # --- fanoff system (vacuum fan off always; LiDAR off only in manual nav) ---
 # Is the shim loaded into AVA?
-ssh dreame-home 'grep -q libfanoff_filter.so /proc/$(pidof ava)/maps && echo loaded || echo MISSING'
+ssh dreame-wifi 'grep -q libfanoff_filter.so /proc/$(pidof ava)/maps && echo loaded || echo MISSING'
 # Is the event-driven LiDAR gate daemon running (holds the Valetudo SSE stream)?
-ssh dreame-home 'ps w | grep "[f]anoff_flag"'
+ssh dreame-wifi 'ps w | grep "[f]anoff_flag"'
 # LiDAR gate state: present = allowed (non-manual mode), absent = blocked (manual/idle)
-ssh dreame-home 'ls /tmp/lidar_allow 2>/dev/null && echo allowed || echo "blocked"'
+ssh dreame-wifi 'ls /tmp/lidar_allow 2>/dev/null && echo allowed || echo "blocked"'
 # Verify on the wire during manual nav (expect SetCleaning 00 01 = fan off, CtrlMcu 14 04 00 = LiDAR off):
-ssh dreame-home 'A=$(pidof ava); timeout 3 chroot /data/chroot strace -f -e trace=write -xx -s64 -p $A -o /tmp/x 2>/dev/null; grep -aoE "x3c.x05.x01.x..\x..|x3c.x02.x14.x04.x.." /data/chroot/tmp/x | sort | uniq -c'
+ssh dreame-wifi 'A=$(pidof ava); timeout 3 chroot /data/chroot strace -f -e trace=write -xx -s64 -p $A -o /tmp/x 2>/dev/null; grep -aoE "x3c.x05.x01.x..\x..|x3c.x02.x14.x04.x.." /data/chroot/tmp/x | sort | uniq -c'
 # Rebuild + reload shim after editing scripts/robot/fanoff_shim.c (scp it to /data first):
-ssh dreame-home 'sh /data/build_ava_shims.sh && killall -9 ava'   # ava.sh relaunches with the new shim
+ssh dreame-wifi 'sh /data/build_ava_shims.sh && killall -9 ava'   # ava.sh relaunches with the new shim
 # Restart the LiDAR gate daemon (without reboot):
-ssh dreame-home 'pkill -f fanoff_flag; setsid sh /data/fanoff_flag.sh </dev/null >/dev/null 2>&1 &'
+ssh dreame-wifi 'pkill -f fanoff_flag; setsid sh /data/fanoff_flag.sh </dev/null >/dev/null 2>&1 &'
 # Mute voice prompts (e.g. manual-nav "Start remote controlled cleaning"):
-ssh dreame-home 'curl -s -X PUT http://localhost/api/v2/robot/capabilities/SpeakerVolumeControlCapability -H "Content-Type: application/json" -d '"'"'{"action":"set_volume","value":0}'"'"''
+ssh dreame-wifi 'curl -s -X PUT http://localhost/api/v2/robot/capabilities/SpeakerVolumeControlCapability -H "Content-Type: application/json" -d '"'"'{"action":"set_volume","value":0}'"'"''
 
 # Deploy scripts to robot (e2e: AP connect → deploy → reboot → reconnect 5K)
 bash /tmp/robot-deploy.sh     # see scripts/robot/deploy.sh for the template
 
 # Test camera
-ssh dreame-home 'v4l2-ctl --device=/dev/video0 --info'
+ssh dreame-wifi 'v4l2-ctl --device=/dev/video0 --info'
 
 # Play test audio on robot
-ssh dreame-home 'aplay -D hw:0,0 /usr/share/sounds/alsa/Front_Left.wav'
+ssh dreame-wifi 'aplay -D hw:0,0 /usr/share/sounds/alsa/Front_Left.wav'
 
 # Check miio state transitions at boot
-ssh dreame-home 'grep -E "(STATE|AP_mode|wifi_conf)" /data/log/user.log | tail -20'
+ssh dreame-wifi 'grep -E "(STATE|AP_mode|wifi_conf)" /data/log/user.log | tail -20'
 
 # Check if robot is in provisioning/AP mode
-ssh dreame-home 'grep "ap will close" /data/log/user.log | tail -3'
+ssh dreame-wifi 'grep "ap will close" /data/log/user.log | tail -3'
 ```
 
 ---
@@ -746,4 +746,4 @@ docs/
 
 **Important**: `scripts/robot/_root.sh` contains the WiFi PSK for the 4K network (2.4GHz home). Do not replace with placeholder values when deploying — this breaks WiFi connectivity.
 
-**Robot config versioning**: Key config files from `/data/config/` are copied to `robot/config/` so changes can be tracked and rolled back. To update: `scp dreame-home:/data/config/ava/clean_parameter.json robot/config/ava/`.
+**Robot config versioning**: Key config files from `/data/config/` are copied to `robot/config/` so changes can be tracked and rolled back. To update: `scp dreame-wifi:/data/config/ava/clean_parameter.json robot/config/ava/`.

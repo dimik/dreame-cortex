@@ -2,7 +2,7 @@
 
 Debug WiFi connectivity on the Dreame D10s Pro. The robot is at 192.168.1.213 when connected, or 192.168.5.1 in AP mode.
 
-Connect to whichever is reachable (`ssh dreame-home` or `ssh dreame`) and run this diagnostic sequence:
+Connect to whichever is reachable (`ssh dreame-wifi` or `ssh dreame`) and run this diagnostic sequence:
 
 1. **wpa_supplicant state**: `wpa_cli -iwlan0 status`
 2. **Is bind mount active?**: `mount | grep wpa_supplicant` — should show the /data/ config overlaid on /etc/wifi/wpa_supplicant.conf

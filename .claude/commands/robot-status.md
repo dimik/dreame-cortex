@@ -1,6 +1,6 @@
 # Robot status check
 
-Run a full status check on the Dreame D10s Pro. SSH to the robot at 192.168.1.213 (home network) using `ssh dreame-home`. Check and report:
+Run a full status check on the Dreame D10s Pro. SSH to the robot at 192.168.1.213 (home network) using `ssh dreame-wifi`. Check and report:
 
 1. **WiFi**: `wpa_cli -iwlan0 status` — show wpa_state and IP address
 2. **Valetudo**: is the process running? tail /tmp/valetudo.log for last 10 lines
