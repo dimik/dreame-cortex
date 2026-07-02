@@ -1,0 +1,19 @@
+[Unit]
+Description=Q6A resident Genie LLM daemon (Llama 3.2 1B on Hexagon NPU)
+After=llama-prewarm.service
+Wants=llama-prewarm.service
+
+[Service]
+Type=simple
+User=radxa
+SupplementaryGroups=render
+WorkingDirectory=/home/radxa/llama-1b
+Environment=LD_LIBRARY_PATH=/home/radxa/llama-1b
+Environment=ADSP_LIBRARY_PATH=/home/radxa/llama-1b
+Environment=Q6A_LLM_SOCK=/tmp/q6a-llm.sock
+ExecStart=/usr/bin/python3 /home/radxa/llama-1b/q6a_llmd.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

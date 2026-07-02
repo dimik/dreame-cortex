@@ -124,6 +124,37 @@ v1.5.0), loader `flat_build/flat_build/spinor/dragon-q6a/prog_firehose_ddr.elf`,
 here (`--host http://<robot-ip>`) + nav2 bringup consuming `/map`+TF (companion role: vision/nav/audio
 per the Architecture section); (3) integrate into robot 12V power; (4) change default password.
 
+### Local LLM on the Q6A NPU (Hexagon, verified 2026-07-02)
+**Works.** Llama 3.2 1B runs on the Hexagon **cDSP/NPU** via Qualcomm **Genie** — coherent output,
+~5.5s per one-shot incl. the 1.78 GB model load (~15 tok/s generation per docs). Set up with
+`scripts/companion/setup_npu_llm.sh`; prompt with **`q6a-llm "..."`** (helper in `~/.local/bin`).
+
+- **Path = download-and-run, no on-device compile.** Radxa ships a pre-compiled **Hexagon-v68**
+  bundle on ModelScope (`radxa/Llama3.2-1B-4096-qairt-v68`, ~1.7 GB in `~radxa/llama-1b`) that
+  contains `genie-t2t-run` + the QNN HTP runtime (`libGenie.so`, `libQnnHtp.so`,
+  **`libQnnHtpV68Skel.so`** = the NPU skeleton) + v68-quantized weights
+  (`models/weight_sharing_model_1_of_1.serialized.bin`) + `htp-model-config-llama32-1b-gqa.json`.
+- **Runtime plumbing already on the image:** `task-qualcomm-npu` (pulls `fastrpc` + `libcdsprpc1`),
+  cDSP channels `/dev/fastrpc-cdsp{,-secure}` (group `render` — `radxa` is already in it). No QAIRT
+  SDK needed on-device for prebuilt models.
+- **Run env (baked into the helper):** `cd` to the model dir, `LD_LIBRARY_PATH=$MODEL_DIR` (Genie/QNN
+  libs), `ADSP_LIBRARY_PATH=$MODEL_DIR` (so the V68 skel loads onto the cDSP), Llama-3.2 chat template.
+- **Custom models** (other bases/sizes/quant): the QCS6490 needs models compiled to **v68** QNN context
+  binaries — do that with the **QAIRT 2.42 SDK on an x86 host (the Odyssey)**, then copy the bundle to
+  the board. Only the prebuilt-model path is proven here.
+- **Not the NPU:** plain llama.cpp GGUF uses CPU/Adreno-GPU, not Hexagon. `task-qualcomm-npu`'s
+  OpenCL (Adreno) path exists but `clinfo` showed no registered device — untried.
+- **Latency / resident daemon (done 2026-07-02):** one-shot `genie-t2t-run` reloads everything each
+  call — ~5s cold, ~2.8s warm (page-cached). Fixed by a **resident Genie daemon** that loads the model
+  onto the NPU once and serves prompts over a Unix socket with token streaming → **~0.47s** for a short
+  reply. Built with **Python+ctypes over the bundled `libGenie.so`** (`GenieDialogConfig_createFromJson`
+  → `GenieDialog_create` once, then `GenieDialog_query` per request with a streaming callback; no
+  compiler, no version mismatch). Units: `llama-prewarm.service` (page-cache warm at boot) +
+  `q6a-llmd.service` (the daemon, `User=radxa`, socket `/tmp/q6a-llm.sock`). Client: **`q6a-llm "..."`**
+  (socket, fast) with **`q6a-llm-oneshot`** as fallback. All in `scripts/companion/` (`q6a_llmd.py`,
+  `q6a-llm`, `systemd/*.service`, `setup_npu_llm.sh`). NB: generation is ~10-15 tok/s, so *long* answers
+  still scale with token count (~12s for ~120 tokens) — the daemon only removes the fixed per-call init.
+
 ### Physical link (Q6A ↔ robot)
 **The robot exposes only ONE USB port — the OTG/debug port** (`usbc0` = `allwinner,sunxi-otg-manager`,
 gadget serial `athena`, used for rooting/flashing). The SoC's 2nd USB controller (`usbc1` → `ehci1`/

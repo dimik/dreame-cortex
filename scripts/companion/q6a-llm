@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""q6a-llm - prompt the resident Genie daemon (Llama 3.2 1B on the Q6A NPU).
+Streams the reply as tokens arrive. Falls back with a hint if the daemon is down."""
+import os, socket, sys
+
+SOCK = os.environ.get("Q6A_LLM_SOCK", "/tmp/q6a-llm.sock")
+msg = " ".join(sys.argv[1:]).strip()
+if not msg:
+    sys.exit("usage: q6a-llm <prompt>")
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(SOCK)
+except OSError as e:
+    sys.exit(f"q6a-llm: daemon not reachable at {SOCK} ({e}).\n"
+             f"  start it: systemctl start q6a-llmd   |   or one-shot: q6a-llm-oneshot \"{msg}\"")
+s.sendall((msg + "\n").encode("utf-8"))
+s.shutdown(socket.SHUT_WR)
+while True:
+    b = s.recv(4096)
+    if not b:
+        break
+    sys.stdout.buffer.write(b)
+    sys.stdout.flush()
+sys.stdout.write("\n")
