@@ -1,0 +1,8 @@
+#!/bin/bash
+# q6a-llm (Odyssey side): prompt the Radxa Q6A NPU LLM (Llama 3.2 1B) over the
+# wired link and stream the reply. Reuses a persistent SSH master so repeat
+# prompts skip the handshake. Prompt is passed via stdin to avoid quoting issues.
+[ -z "$*" ] && { echo "usage: q6a-llm <prompt>"; exit 1; }
+printf '%s' "$*" | ssh -o ConnectTimeout=8 \
+  -o ControlMaster=auto -o ControlPath=/tmp/q6a-cm-%r@%h:%p -o ControlPersist=120 \
+  ippolit-lan 'p=$(cat); exec ~/.local/bin/q6a-llm "$p"'

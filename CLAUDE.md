@@ -151,8 +151,11 @@ per the Architecture section); (3) integrate into robot 12V power; (4) change de
   → `GenieDialog_create` once, then `GenieDialog_query` per request with a streaming callback; no
   compiler, no version mismatch). Units: `llama-prewarm.service` (page-cache warm at boot) +
   `q6a-llmd.service` (the daemon, `User=radxa`, socket `/tmp/q6a-llm.sock`). Client: **`q6a-llm "..."`**
-  (socket, fast) with **`q6a-llm-oneshot`** as fallback. All in `scripts/companion/` (`q6a_llmd.py`,
-  `q6a-llm`, `systemd/*.service`, `setup_npu_llm.sh`). NB: generation is ~10-15 tok/s, so *long* answers
+  (socket, fast) with **`q6a-llm-oneshot`** as fallback. From another LAN host (the Odyssey),
+  **`q6a-llm-remote`** SSHes to the board over the wired link and streams the reply (persistent SSH
+  master; installed as `q6a-llm` on the Odyssey at `~/.local/bin`). Latency (warm): ~0.8s to first
+  token + ~12 tok/s, so `total ≈ 0.8s + tokens/12` (one-liner ~1-3s, paragraph ~15s). All in
+  `scripts/companion/` (`q6a_llmd.py`, `q6a-llm`, `q6a-llm-remote`, `systemd/*.service`, `setup_npu_llm.sh`). NB: generation is ~10-15 tok/s, so *long* answers
   still scale with token count (~12s for ~120 tokens) — the daemon only removes the fixed per-call init.
 
 ### Physical link (Q6A ↔ robot)
